@@ -1,0 +1,60 @@
+name: Build DevThink Installers
+
+# 触发：推送 v* 标签，或手动在 Actions 页面点 Run workflow
+# 作用：在 GitHub 托管的 Mac / Windows / Ubuntu  runner 上各打一个平台安装包
+# 产物：release/*.dmg (mac) / release/*.exe + *.exe (win nsis+portable) / release/*.AppImage (linux)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+        env:
+          # 用国内镜像加速 Electron 运行时下载（避免 GitHub 被掐断）
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+
+      - name: Build installer (current platform)
+        run: npm run electron:build
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevThink-${{ matrix.os }}
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.AppImage
+            release/*.blockmap
+          if-no-files-found: ignore
+
+  # 可选：自动创建 GitHub Release 并把三平台包挂上去
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**

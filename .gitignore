@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.devthinkrc
+*.local.json
+generated/
+.DS_Store
+npm-debug.log*
+# 含敏感 key 的临时浏览器驱动脚本
+output/devthink-preview/*.cjs
+# 验证截图（不入库，CI 重新生成产物）
+output/devthink-preview/*.png
+# 构建产物与残留（CI 重新生成，不入库）
+release/
+dist_bak_*/
+*.timestamp-*.mjs
