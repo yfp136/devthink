@@ -1,6 +1,6 @@
 {
   "name": "devthink",
-  "version": "0.1.0",
+  "version": "0.1.20",
   "description": "AI 全栈研发工作台（DevThink）—— 双窗口 AI 全链路开发工具（一期 MVP 骨架）",
   "productName": "DevThink",
   "author": "泸州恒光科技有限公司",
@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.1.1",
+    "asar": "^3.2.0",
     "cross-env": "^7.0.3",
     "electron": "^32.0.0",
     "electron-builder": "^24.13.3",
@@ -46,6 +47,12 @@
       "dist/**/*",
       "electron/**/*",
       "src/ai/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".devthinkrc",
+        "to": "devthinkrc"
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

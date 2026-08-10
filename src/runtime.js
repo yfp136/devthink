@@ -1,8 +1,15 @@
 // 运行环境抽象：Electron 下走 preload IPC（key 留主进程），浏览器下走 localStorage 兜底。
 import { mockReply } from './ai/mock.js'
-import { MODE_PROMPTS, DOC_GEN_SYSTEM, DOC_REVISE_SYSTEM, DOC_ANALYZE_SYSTEM, CODE_EDIT_SYSTEM, ALIGN_SYSTEM, injectContext } from './ai/prompts.js'
+import { MODE_PROMPTS, DOC_GEN_SYSTEM, DOC_REVISE_SYSTEM, DOC_ANALYZE_SYSTEM, CODE_EDIT_SYSTEM, ALIGN_SYSTEM, UNDERSTAND_SYSTEM, injectContext } from './ai/prompts.js'
 
 const isElectron = typeof window !== 'undefined' && window.api && window.api.platform === 'electron'
+
+// 把可能带 Vue reactive Proxy 的对象退成普通 JSON 可序列化对象，避免 Electron IPC
+// 结构化克隆报 "An object could not be cloned"。对浏览器路径无害。
+function plain(obj) {
+  if (obj === undefined) return undefined
+  return JSON.parse(JSON.stringify(obj))
+}
 
 function simpleHash(pwd) {
   let h = 0
@@ -22,13 +29,16 @@ const browserStore = {
     localStorage.setItem(k, JSON.stringify(v))
   },
   async aiChat({ messages, mode, config, context }) {
-    if (config?.baseUrl && config?.apiKey) {
-      const sys = mode === 'doc' ? DOC_GEN_SYSTEM : mode === 'revise' ? DOC_REVISE_SYSTEM : mode === 'analyze' ? DOC_ANALYZE_SYSTEM : mode === 'edit' ? CODE_EDIT_SYSTEM : mode === 'align' ? ALIGN_SYSTEM : MODE_PROMPTS[mode] || MODE_PROMPTS.single
+    // 双模型路由：理解/对齐/闲聊用 chat 模型（豆包），文档/代码用 code 模型（DeepSeek）
+    const role = (mode === 'chat' || mode === 'align' || mode === 'single') ? 'chat' : 'code'
+    const cfg = config?.[role] || config
+    if (cfg?.baseUrl && cfg?.apiKey) {
+      const sys = mode === 'chat' ? UNDERSTAND_SYSTEM : mode === 'doc' ? DOC_GEN_SYSTEM : mode === 'revise' ? DOC_REVISE_SYSTEM : mode === 'analyze' ? DOC_ANALYZE_SYSTEM : mode === 'edit' ? CODE_EDIT_SYSTEM : mode === 'align' ? ALIGN_SYSTEM : MODE_PROMPTS[mode] || MODE_PROMPTS.single
       const msgs = injectContext(messages, context)
-      const res = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      const res = await fetch(`${cfg.baseUrl.replace(/\/$/gi, '')}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model: config.model || 'deepseek-chat', messages: [{ role: 'system', content: sys }, ...msgs], temperature: 0.7 })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+        body: JSON.stringify({ model: cfg.model || 'deepseek-chat', messages: [{ role: 'system', content: sys }, ...msgs], temperature: 0.7 })
       })
       if (!res.ok) throw new Error(`AI 接口返回 ${res.status}`)
       const data = await res.json()
@@ -49,7 +59,15 @@ const browserStore = {
 const browserApi = {
   platform: 'browser',
   config: {
-    get: () => Promise.resolve(browserStore._get('devthink.config', { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' })),
+    get: () => {
+      const chatDefaults = { provider: 'doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: '', model: 'doubao-seed-2-0-lite-260428' }
+      const codeDefaults = { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' }
+      const saved = browserStore._get('devthink.config', { provider: 'doubao', ...chatDefaults, chat: chatDefaults, code: codeDefaults })
+      if (!saved.chat && !saved.code) {
+        return { ...saved, chat: { ...chatDefaults, ...saved }, code: { ...codeDefaults, ...saved } }
+      }
+      return saved
+    },
     set: (cfg) => {
       browserStore._set('devthink.config', cfg)
       return Promise.resolve(true)
@@ -154,9 +172,34 @@ const browserApi = {
   },
   preview: {
     start: () => Promise.resolve({ ok: false, error: '实时预览需在 DevThink 桌面端（Electron）中运行，且工程已生成到本地磁盘。' }),
-    stop: () => Promise.resolve({ ok: true })
+    stop: () => Promise.resolve({ ok: true }),
+    // ③ 桌面 App 形态预览（浏览器环境不支持，仅提示）
+    openApp: () => Promise.resolve({ ok: false, error: '桌面 App 形态预览需在 DevThink 桌面端（Electron）中运行。' })
   }
 }
 
-export const runtime = isElectron ? window.api : browserApi
+const electronApi = isElectron
+  ? {
+      ...window.api,
+      config: {
+        get: () => window.api.config.get(),
+        set: (cfg) => window.api.config.set(plain(cfg))
+      },
+      ai: {
+        chat: ({ messages, mode, config, context }) =>
+          window.api.ai.chat({ messages: plain(messages), mode, config: plain(config), context: plain(context) })
+      },
+      projects: {
+        ...window.api.projects,
+        save: (username, project) => window.api.projects.save(username, plain(project))
+      },
+      fs: {
+        ...window.api.fs,
+        writeProject: ({ dir, files }) => window.api.fs.writeProject({ dir, files: plain(files) }),
+        writeFiles: ({ base, files }) => window.api.fs.writeFiles({ base, files: plain(files) })
+      }
+    }
+  : null
+
+export const runtime = isElectron ? electronApi : browserApi
 export const PLATFORM = isElectron ? 'electron' : 'browser'

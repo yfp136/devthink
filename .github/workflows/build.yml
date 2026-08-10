@@ -1,20 +1,44 @@
 name: Build DevThink Installers
 
-# 触发：推送 v* 标签，或手动在 Actions 页面点 Run workflow
-# 作用：在 GitHub 托管的 Mac / Windows / Ubuntu  runner 上各打一个平台安装包
-# 产物：release/*.dmg (mac) / release/*.exe + *.exe (win nsis+portable) / release/*.AppImage (linux)
+# 触发：
+#   1) 推送 v* 标签（如 git tag v0.1.20 && git push --tags）→ 自动出包并建 Release
+#   2) 在 Actions 页面手动点 "Run workflow"（无需打标签，方便测试）
+#
+# 作用：在 GitHub 托管的 macOS / Windows / Ubuntu runner 上各打一个平台安装包
+# 产物：
+#   - mac : release/DevThink-*.dmg            (Apple Silicon arm64)
+#   - win : release/DevThink Setup *.exe      (NSIS 安装包)
+#           release/DevThink * Portable.exe   (单文件便携版)
+#   - linux: release/DevThink-*.AppImage
+#
+# 说明：
+#   - 本项目未签名，macOS dmg / Windows exe 下载后需 xattr -cr 或点「仍要运行」。
+#     如需对外分发，启用下方「可选：macOS 签名+公证」注释段并配置对应 Secrets。
+#   - .devthinkrc 含 AI Key，已被 .gitignore 忽略，不会进仓库。CI 通过
+#     Secrets.DEVTHINKRC 注入（仅团队内部仓库设置）；未设置时写入占位配置，
+#     保证 electron-builder 的 extraResources 不报错，AI Key 留空由用户在设置里填。
+
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -22,22 +46,45 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+
+      # ---- 注入 .devthinkrc（AI 配置）----
+      # 优先用仓库 Secret.DEVTHINKRC（应为合法 JSON，不要带 // 注释，
+      # 否则 main.cjs 的 JSON.parse 会失败回落到空 Key）。
+      # 未设置则写占位配置，保证打包不报错。
+      - name: Inject .devthinkrc (AI config)
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.DEVTHINKRC }}" ]; then
+            printf '%s' "${{ secrets.DEVTHINKRC }}" > .devthinkrc
+            echo ".devthinkrc injected from secret"
+          elif [ ! -f .devthinkrc ]; then
+            cat > .devthinkrc <<'JSON'
+          {
+            "chat": { "provider": "doubao", "baseUrl": "https://ark.cn-beijing.volces.com/api/v3", "apiKey": "", "model": "doubao-seed-2-0-lite-260428" },
+            "code": { "provider": "deepseek", "baseUrl": "https://api.deepseek.com/v1", "apiKey": "", "model": "deepseek-chat" }
+          }
+          JSON
+            echo ".devthinkrc placeholder created (AI Key 留空，请在设置填写)"
+          fi
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
         env:
-          # 用国内镜像加速 Electron 运行时下载（避免 GitHub 被掐断）
+          # 国内镜像加速 Electron 运行时下载（避免 GitHub 被掐断）
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
 
       - name: Build installer (current platform)
         run: npm run electron:build
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          # macOS 未配置签名证书时，禁止 electron-builder 自动寻找签名身份而卡住
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: DevThink-${{ matrix.os }}
+          name: DevThink-${{ matrix.platform }}
           path: |
             release/*.dmg
             release/*.exe
@@ -45,11 +92,13 @@ jobs:
             release/*.blockmap
           if-no-files-found: ignore
 
-  # 可选：自动创建 GitHub Release 并把三平台包挂上去
+  # 自动创建 GitHub Release 并把三平台包挂上去（仅打标签时触发）
   release:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -58,3 +107,29 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**
+          generate_release_notes: true
+
+# ---- 可选：macOS 签名 + 公证（对外分发才需要）----
+# 取消注释并在仓库 Settings→Secrets 配置：
+#   MAC_CERT_P12      : 从 Apple Developer 导出的 .p12（base64）
+#   MAC_CERT_PASSWORD : .p12 密码
+#   APPLE_ID          : 开发者 Apple ID
+#   APPLE_PASSWORD    : 专用密码（app-specific）
+#   APPLE_TEAM_ID     : 团队 ID
+# 同时在上方 build 作业的 mac 步骤加：
+#   - name: Import signing cert
+#     if: matrix.platform == 'mac' && env.MAC_CERT_P12 != ''
+#     run: |
+#       echo "$MAC_CERT_P12" | base64 --decode > cert.p12
+#       security create-keychain -p ci build.keychain
+#       security import cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+#       security list-keychains -s build.keychain login.keychain
+#     env:
+#       MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+#       MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+# 并把 build 步骤的 CSC_IDENTITY_AUTO_DISCOVERY 设为 true，并加：
+#   CSC_LINK: cert.p12
+#   CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+#   APPLE_ID: ${{ secrets.APPLE_ID }}
+#   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+#   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

@@ -24,7 +24,7 @@ const api = {
     delete: (username, id) => ipcRenderer.invoke('projects:delete', { username, id })
   },
   ai: {
-    chat: ({ messages, mode, config }) => ipcRenderer.invoke('ai:chat', { messages, mode, config })
+    chat: ({ messages, mode, config, context }) => ipcRenderer.invoke('ai:chat', { messages, mode, config, context })
   },
   dialog: {
     selectFile: () => ipcRenderer.invoke('dialog:selectFile')
@@ -44,7 +44,14 @@ const api = {
   },
   preview: {
     start: (cfg) => ipcRenderer.invoke('preview:start', cfg),
-    stop: () => ipcRenderer.invoke('preview:stop')
+    stop: () => ipcRenderer.invoke('preview:stop'),
+    // ③ 桌面 App 形态预览：在独立 Electron 窗口打开生成的 web 应用
+    openApp: ({ url, title }) => ipcRenderer.invoke('preview:openApp', { url, title }),
+    onLog: (cb) => ipcRenderer.on('preview:log', (_e, line) => cb(line))
+  },
+  capture: {
+    // 桌面端「📷 截图」：调用系统截屏，返回 dataURL 供前端插入对话
+    screenshot: () => ipcRenderer.invoke('capture:screenshot')
   }
 }
 

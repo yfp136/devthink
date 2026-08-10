@@ -60,9 +60,26 @@ async function packElectronDesktop({ base, root, safe, pack, log }) {
   }
   const mainJs = `const { app, BrowserWindow } = require('electron')
 const path = require('path')
+const fs = require('fs')
+function resolveIndexHtml() {
+  // 打包后资源在 app 内（./web/dist）；开发态 web/dist 在 electron-desktop 上一级（../web/dist）
+  const candidates = [
+    path.join(__dirname, 'web/dist/index.html'),
+    path.join(__dirname, '../web/dist/index.html')
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
+  return candidates[0]
+}
 function create() {
   const win = new BrowserWindow({ width: 1100, height: 720, webPreferences: { nodeIntegration: false, contextIsolation: true } })
-  win.loadFile(path.join(__dirname, '../web/dist/index.html'))
+  const indexHtml = resolveIndexHtml()
+  if (!fs.existsSync(indexHtml)) {
+    win.loadURL('data:text/html,<h2 style="font-family:sans-serif;padding:24px;color:#c0392b">找不到前端资源 web/dist/index.html，请在 DevThink 中重新生成并打包。</h2>')
+  } else {
+    win.loadFile(indexHtml)
+  }
 }
 app.whenReady().then(create)
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
@@ -76,7 +93,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
     build: {
       appId: `com.devthink.${safe.replace(/-/g, '')}`,
       productName: safe,
-      files: ['main.js', 'web/dist/**/*'],
+      files: ['main.js', 'web/dist/**/*', '!node_modules', '!dist-out'],
       directories: { output: 'dist-out' }
     }
   }
@@ -86,6 +103,26 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
   ]
   const written = await runtime.fs.writeFiles({ base: `${base}/electron-desktop`, files: wrapFiles })
   if (!written.ok) return { target: '桌面端（Electron 安装包）', status: 'error', log: '写入 Electron 包裹工程失败', artifacts: [], error: '写盘失败' }
+
+  // 关键修复：把已构建的 web/dist 复制进 electron-desktop，electron-builder 才能把它打进 app.asar（否则双击白屏）
+  const isWin = plat === 'win'
+  const copySteps = isWin
+    ? [
+        `rmdir /S /Q "${written.base}\\web" 2>nul || exit /b 0`,
+        `mkdir "${written.base}\\web"`,
+        `xcopy /E /I /Y "${root}\\web\\dist" "${written.base}\\web\\dist"`
+      ]
+    : [
+        `rm -rf "${written.base}/web"`,
+        `mkdir -p "${written.base}/web"`,
+        `cp -R "${root}/web/dist" "${written.base}/web/"`
+      ]
+  const copyRun = await runtime.shell.run({ cwd: written.base, steps: copySteps })
+  if (!copyRun.ok) {
+    return { target: '桌面端（Electron 安装包）', status: 'error', log: '复制 web/dist 至 electron-desktop 失败：' + copyRun.output, artifacts: [], error: '复制 web/dist 失败' }
+  }
+  log.push('已将 web/dist 复制进 electron-desktop/web/dist（打包资源就绪）')
+
   const targetFlag = plat === 'mac' ? '--mac' : plat === 'win' ? '--win' : '--linux'
   const r = await runtime.shell.run({
     cwd: written.base,

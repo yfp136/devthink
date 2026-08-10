@@ -4,13 +4,13 @@ import { store, generateProject, runPack, addServer, runDeploy, testServer, save
 import { runtime } from '../runtime.js'
 import { THRESHOLDS as TH } from '../monitor.js'
 import { diffLines } from '../editAgent.js'
-import MarkdownView from './MarkdownView.vue'
 import TreeView from './TreeView.vue'
 
-const tab = ref('code')
 const r = store.right
-
-const codeTab = computed(() => r.doc)
+const tab = computed({
+  get: () => r.activeTab || 'code',
+  set: (v) => { r.activeTab = v }
+})
 
 // 代码工程：点击文件预览内容（selectedPath 提升到 store，供左侧「改代码」共享目标文件）
 const selectedContent = computed(() => {
@@ -23,9 +23,43 @@ function onOpenFile(node) {
 
 // 生成前端实时预览（PRD 二期「边改边看」）：在桌面端启动 Vite dev server，iframe 内加载 HMR 页面
 const pv = computed(() => r.preview)
+// 预览模式：dev=开发态(HMR 热更新) / build=成品态(先 vite build 再 preview，所见即所得)
+const previewMode = ref('dev')
+const previewShell = ref('embed') // 'embed' 内嵌面板 | 'app' 桌面窗口(App 形态，所见即所得)
+const switching = ref(false)
+async function setPreviewMode(mode) {
+  if (mode === previewMode.value) return
+  if (pv.value.url) {
+    switching.value = true
+    await stopPreview()
+    switching.value = false
+  }
+  previewMode.value = mode
+}
+async function setPreviewShell(shell) {
+  if (shell === previewShell.value) return
+  if (pv.value.url) {
+    switching.value = true
+    await stopPreview()
+    switching.value = false
+  }
+  previewShell.value = shell
+}
 function togglePreview() {
   if (pv.value.url) stopPreview()
-  else startPreview()
+  else startPreview(previewMode.value, previewShell.value)
+}
+
+// 接收主进程实时推送的预览启动日志
+if (runtime.preview?.onLog) {
+  runtime.preview.onLog((line) => {
+    r.preview.log += line
+    // 日志自动滚动到底部
+    setTimeout(() => {
+      const el = document.getElementById('preview-log')
+      if (el) el.scrollTop = el.scrollHeight
+    }, 0)
+  })
 }
 
 // 最近一次对话式改动的行级 diff：展示首个被改文件的增删行；其余文件在列表里列出
@@ -173,20 +207,32 @@ const cpuSparkline = computed(() => {
       <button class="tab-clear" @click="clearRight" title="清空当前标签页内容（出错时一键重置）">🗑️ 清空</button>
     </div>
 
-    <!-- 代码工程 -->
+    <!-- 代码工程：只展示生成的工程文件树，不再渲染中间设计文档 -->
     <div class="panel-body" v-show="tab === 'code'">
-      <div v-if="!codeTab" class="muted" style="text-align:center;margin-top:40px">
-        暂无设计文档。请到左侧「定稿推送开发窗口」后，这里会显示全套文档并生成同源工程。
+      <div v-if="!r.generated" class="muted" style="text-align:center;margin-top:40px">
+        暂无生成工程。请到左侧输入需求并点击「✅ 确认并生成成品」。
       </div>
       <template v-else>
-        <div v-if="r.dirty" class="dirty-banner" style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-weight:600">📌 设计文档已修改，点击「⚙️ 生成同源全栈工程」刷新代码</div>
+        <div v-if="r.dirty" class="dirty-banner" style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-weight:600">📌 设计文档已修改，点击「⚙️ 重新生成同源全栈工程」刷新代码</div>
         <div class="card">
-          <h4>📥 已接收设计文档（来自：{{ r.docMeta?.branchName }}）</h4>
-          <MarkdownView :source="r.doc" />
-        </div>
-        <div class="panel-foot" style="position:static;border:none;padding:0 0 12px">
-          <button class="primary" @click="generateProject">⚙️ 生成同源全栈工程</button>
-          <button @click="doSave">💾 保存项目</button>
+          <h4>🌳 同源全栈工程（{{ r.generated.files.length }} 个文件 · {{ new Date(r.generated.generatedAt).toLocaleString() }}）</h4>
+          <div style="display:flex; gap:12px; align-items:flex-start">
+            <div class="tree" style="flex:0 0 280px; max-height:360px; overflow:auto; border-right:1px solid var(--border); padding-right:10px">
+              <TreeView v-for="n in r.generated.tree" :key="n.name" :node="n" @open="onOpenFile" />
+            </div>
+            <div style="flex:1; min-width:0">
+              <div v-if="!r.selectedPath" class="muted">👈 点击左侧文件查看源码内容</div>
+              <div v-else>
+                <div class="pill" style="margin-bottom:6px">{{ r.selectedPath }}</div>
+                <pre style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;max-height:320px;font-size:12px"><code>{{ selectedContent }}</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="panel-foot" style="position:static;border:none;padding:12px 0 0">
+            <button class="primary" @click="generateProject">⚙️ 重新生成同源全栈工程</button>
+            <button @click="doSave">💾 保存项目</button>
+          </div>
+          <p class="muted">含 服务端(Express + node:sqlite 真实持久化) / Web 前端(Vue3 已对接 CRUD) / 桌面端(Tauri) / 移动端(Android) 四套同源产出，由左侧设计文档的库表自动解析生成（已在 Electron 模式写入本地磁盘）。选中某个文件后，可在左侧「🛠️ 改代码」模式下对它做对话式修改。</p>
         </div>
         <div v-if="r.lastEdit" class="card" style="border-color:#2563eb">
           <h4>🛠️ 最近一次对话式改动</h4>
@@ -217,22 +263,6 @@ const cpuSparkline = computed(() => {
             <button @click="redeploy" :disabled="r.deploy.running">🚀 重新部署</button>
             <span class="muted">累计 {{ r.editHistory.length }} 次改动</span>
           </div>
-        </div>
-        <div v-if="r.generated" class="card">
-          <h4>🌳 同源全栈工程（{{ r.generated.files.length }} 个文件 · {{ new Date(r.generated.generatedAt).toLocaleString() }}）</h4>
-          <div style="display:flex; gap:12px; align-items:flex-start">
-            <div class="tree" style="flex:0 0 280px; max-height:360px; overflow:auto; border-right:1px solid var(--border); padding-right:10px">
-              <TreeView v-for="n in r.generated.tree" :key="n.name" :node="n" @open="onOpenFile" />
-            </div>
-            <div style="flex:1; min-width:0">
-              <div v-if="!r.selectedPath" class="muted">👈 点击左侧文件查看源码内容</div>
-              <div v-else>
-                <div class="pill" style="margin-bottom:6px">{{ r.selectedPath }}</div>
-                <pre style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;max-height:320px;font-size:12px"><code>{{ selectedContent }}</code></pre>
-              </div>
-            </div>
-          </div>
-          <p class="muted">含 服务端(Express + node:sqlite 真实持久化) / Web 前端(Vue3 已对接 CRUD) / 桌面端(Tauri) / 移动端(Android) 四套同源产出，由左侧设计文档的库表自动解析生成（已在 Electron 模式写入本地磁盘）。选中某个文件后，可在左侧「🛠️ 改代码」模式下对它做对话式修改。</p>
         </div>
       </template>
     </div>
@@ -377,20 +407,47 @@ const cpuSparkline = computed(() => {
     <!-- 实时预览 -->
     <div class="panel-body" v-show="tab === 'preview'">
       <div class="card">
-        <h4>👁 生成前端实时预览（HMR）</h4>
-        <p class="muted">在桌面端启动生成前端的 Vite 开发服务器，内置窗口实时查看 UI 改动效果。需先「生成同源全栈工程」并在 DevThink 桌面端运行。</p>
+        <h4>👁 生成前端实时预览</h4>
+        <p class="muted">在桌面端启动生成前端的本地服务，内置窗口实时查看效果。需先「生成同源全栈工程」并在 DevThink 桌面端运行。</p>
+        <div class="pv-mode">
+          <button :class="['pv-mode-btn', { active: previewMode === 'dev' }]" @click="setPreviewMode('dev')" :disabled="switching">🔄 开发预览</button>
+          <button :class="['pv-mode-btn', { active: previewMode === 'build' }]" @click="setPreviewMode('build')" :disabled="switching">📦 成品预览</button>
+          <button :class="['pv-mode-btn', { active: previewMode === 'fullstack' }]" @click="setPreviewMode('fullstack')" :disabled="switching">🔗 联调真实数据</button>
+        </div>
+        <div class="pv-shell">
+          <span class="muted">预览形态：</span>
+          <button :class="['pv-shell-btn', { active: previewShell === 'embed' }]" @click="setPreviewShell('embed')" :disabled="switching">🪟 内嵌面板</button>
+          <button :class="['pv-shell-btn', { active: previewShell === 'app' }]" @click="setPreviewShell('app')" :disabled="switching">🖥 桌面窗口（App 形态）</button>
+        </div>
+        <div v-if="pv.url" class="pv-running-hint">
+          <span class="dot running"></span>
+          正在运行：<b>{{ pv.mode === 'fullstack' ? '联调真实数据' : (pv.mode === 'build' ? '成品预览' : '开发预览') }}</b>
+          <span class="muted">（点击其他模式会自动停止并切换）</span>
+        </div>
         <div class="panel-foot" style="position:static;border:none;padding:0 0 12px">
-          <button class="primary" @click="togglePreview" :disabled="pv.running">{{ pv.url ? '⏹ 停止预览' : (pv.running ? '⏳ 启动中…' : '▶️ 启动预览') }}</button>
+          <button class="primary" @click="togglePreview" :disabled="pv.running">{{ pv.url ? '⏹ 停止预览' : (pv.running ? '⏳ 启动中…' : (previewMode === 'fullstack' ? '▶️ 启动联调预览' : (previewMode === 'build' ? '▶️ 启动成品预览' : '▶️ 启动开发预览'))) }}</button>
           <span v-if="pv.error" class="muted" style="color:#dc2626">{{ pv.error }}</span>
         </div>
         <div v-if="pv.url" class="preview-wrap">
           <div class="preview-bar">
             <span class="pill">{{ pv.url }}</span>
+            <span class="pill" style="background:#1e293b;color:#93c5fd">{{ pv.mode === 'fullstack' ? '联调真实数据' : (pv.mode === 'build' ? '成品预览' : '开发预览') }}</span>
+            <span class="pill" style="background:#7c3aed;color:#ede9fe">{{ previewShell === 'app' ? '桌面窗口' : '内嵌面板' }}</span>
             <a :href="pv.url" target="_blank" rel="noopener" class="artifact-btn">↗ 新窗口打开</a>
           </div>
-          <iframe :src="pv.url" class="preview-frame" title="生成前端预览"></iframe>
+          <iframe v-if="previewShell === 'embed'" :src="pv.url" class="preview-frame" title="生成前端预览"></iframe>
+          <div v-else class="app-shell-hint">
+            ✅ 已在独立桌面窗口中打开（带原生标题栏与应用菜单）。<br />
+            这就是该软件「打包成桌面 App」后用户看到的样子。若窗口已关闭，点「停止预览」后重新启动即可再次打开。
+          </div>
         </div>
-        <p v-else-if="!pv.running" class="muted">点击「启动预览」后，这里会加载生成前端的实时页面（端口 5180）。注意：前端默认代理 <code>/api</code> 到后端 3001，仅看 UI 时可不改；要联调 CRUD 需另启后端。</p>
+        <pre v-if="pv.running || pv.log" id="preview-log" class="preview-log">{{ pv.log || '启动中…' }}</pre>
+        <p v-else-if="!pv.running" class="muted">
+          <template v-if="previewShell === 'app'">「桌面窗口（App 形态）」会在独立 Electron 窗口中打开生成的软件，带原生菜单与标题栏——所见即所得地看到它作为桌面 App 分发后的样子。数据真实度仍由上方模式（开发 / 成品 / 联调）决定。</template>
+          <template v-else-if="previewMode === 'fullstack'">「联调真实数据」会同时启动前端与 Express 后端（3001，node:sqlite），前端 <code>/api</code> 代理到后端，看到的是带真实增删改查数据的系统（后端首次启动会自动写入示例数据）。需工程包含 backend 目录。</template>
+          <template v-else-if="previewMode === 'build'">「成品预览」会先 <code>vite build</code> 再起 preview 服务，看到的即最终部署/打包的网页（所见即所得）。改代码后需停止并重新启动才刷新。</template>
+          <template v-else>「开发预览」带 HMR 热更新，改代码自动刷新。仅看 UI 可不改后端；想联调真实数据请选「联调真实数据」模式。</template>
+        </p>
       </div>
     </div>
   </div>
@@ -602,6 +659,84 @@ const cpuSparkline = computed(() => {
 }
 
 /* 实时预览面板 */
+.pv-mode {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.pv-mode-btn {
+  flex: 1;
+  min-width: 160px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.pv-mode-btn:hover:not(:disabled) { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+.pv-mode-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(37,99,235,0.18);
+}
+.pv-mode-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pv-shell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.pv-shell-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.pv-shell-btn:hover:not(:disabled) { border-color: #7c3aed; color: #7c3aed; background: #f5f3ff; }
+.pv-shell-btn.active {
+  background: #7c3aed;
+  border-color: #7c3aed;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(124,58,237,0.18);
+}
+.pv-shell-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pv-running-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #1e40af;
+}
+.pv-running-hint .dot.running {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34,197,94,0.25);
+  animation: pulse-dot 1.4s infinite;
+}
+@keyframes pulse-dot {
+  0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.4); }
+  70% { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+}
 .preview-wrap {
   margin-top: 10px;
   border: 1px solid var(--border);
@@ -623,5 +758,26 @@ const cpuSparkline = computed(() => {
   border: none;
   background: #fff;
   display: block;
+}
+.app-shell-hint {
+  padding: 28px 20px;
+  background: #faf5ff;
+  color: #6d28d9;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.preview-log {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

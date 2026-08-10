@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { store, init } from './store.js'
 import { PLATFORM } from './runtime.js'
+import { version } from '../package.json'
 import LeftPanel from './components/LeftPanel.vue'
 import RightPanel from './components/RightPanel.vue'
 import AccountModal from './components/AccountModal.vue'
@@ -35,7 +36,7 @@ function startDrag(e) {
     <div class="topbar">
       <img src="/logo.png" class="brand-logo" alt="logo" />
       <span class="brand">DevThink</span>
-      <span class="muted">AI 全栈研发工作台 · 一期 MVP</span>
+      <span class="muted">AI 全栈研发工作台 · v{{ version }}</span>
       <span class="spacer"></span>
       <span class="pill">{{ PLATFORM === 'electron' ? '桌面端' : '网页版' }}</span>
       <button @click="showSettings = true">⚙️ AI 设置</button>

@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { runtime, PLATFORM } from './runtime.js'
-import { generateProjectFiles, buildTree } from './codegen.js'
+import { generateProjectFiles, buildTree, parseDbTables, extractProjectName, detectAppType } from './codegen.js'
 import * as editAgent from './editAgent.js'
 import { packProject } from './packager.js'
 import { deployStatic, deployFullStack, DEPLOY_STEPS, DEPLOY_STEPS_FULL } from './deploy.js'
@@ -9,7 +9,11 @@ import { fetchMetrics, THRESHOLDS } from './monitor.js'
 export const store = reactive({
   user: null,
   role: 'user',
-  config: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' },
+  config: {
+    provider: 'doubao',
+    chat: { provider: 'doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: '', model: 'doubao-seed-2-0-lite-260428' },
+    code: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' }
+  },
   branches: [],
   activeBranchId: null,
   snapshots: [],
@@ -23,7 +27,8 @@ export const store = reactive({
     lastEdit: null,
     editHistory: [],
     autoAfterEdit: { pack: false },
-    preview: { url: '', running: false, error: '' },
+    activeTab: 'code',
+    preview: { url: '', running: false, error: '', log: '', mode: 'dev' },
     pack: { name: '我的应用', logo: '', version: '1.0.0', autoUpdate: false, tasks: [], running: false, results: [], log: '', artifacts: [] },
     deploy: { servers: [], activeServer: null, tasks: [], running: false, monitor: { activeServerId: null, metrics: null, history: [], alerts: [], auto: false, timer: null, loading: false } }
   },
@@ -37,6 +42,10 @@ export function toast(msg) {
   store.ui.toast = msg
   if (store.ui.toastTimer) clearTimeout(store.ui.toastTimer)
   store.ui.toastTimer = setTimeout(() => (store.ui.toast = ''), 2600)
+}
+
+export function setRightTab(tab) {
+  store.right.activeTab = tab
 }
 
 export async function init() {
@@ -111,9 +120,9 @@ export function saveSnapshot(name, doc) {
   store.snapshots.push({ id, name, doc, createdAt: Date.now() })
   return id
 }
-export function pushDocToRight(name, doc) {
+export function pushDocToRight(name, doc, sceneHint = '') {
   store.right.doc = doc
-  store.right.docMeta = { branchName: name, pushedAt: Date.now() }
+  store.right.docMeta = { branchName: name, sceneHint, pushedAt: Date.now() }
   toast('设计文档已推送至成品开发窗口')
 }
 
@@ -152,15 +161,33 @@ export async function reviseDoc(instruction, context) {
 }
 
 // ---------- 工程生成（PRD 4.1.1 同源全栈工程）----------
-export async function generateProject() {
-  if (!store.right.doc) {
+// opts.doc / opts.sceneHint 允许左侧 runFullAuto 直接传入内部设计文档，无需先推到 store.right.doc
+export async function generateProject(opts = {}) {
+  const doc = opts.doc || store.right.doc
+  const sceneHint = opts.sceneHint || store.right.docMeta?.sceneHint || ''
+  if (!doc) {
     toast('请先在左侧定稿并推送设计文档')
     return
   }
-  const name = (store.right.docMeta?.branchName || store.right.pack.name || 'MyApp').replace(/\s+/g, '-')
-  const files = generateProjectFiles({ name, doc: store.right.doc })
+  // 必须依赖 sceneHint 推断应用类型/项目名；若 sceneHint 为空，说明调用链有 bug，停止生成避免回退到 admin/fanganfenzhi-2
+  if (!String(sceneHint || '').trim()) {
+    toast('⚠️ 缺少场景线索（sceneHint），无法判断应用类型，请先在左侧聊需求')
+    console.error('[generateProject] sceneHint 为空，拒绝生成；doc 长度=', String(doc || '').length)
+    return
+  }
+  // 用完整对话线索 + 设计文档内容提取真实项目名，避免 branchName/旧 pack.name 污染成 fanganfenzhi-2
+  const branchName = (store.right.docMeta?.branchName || 'MyApp').replace(/\s+/g, '-')
+  const name = extractProjectName(sceneHint) || extractProjectName(doc) || branchName
+  const appType = detectAppType(sceneHint, doc)
+  console.log('[generateProject] sceneHint 长度=', sceneHint.length, 'name=', name, 'appType=', appType)
+  const files = generateProjectFiles({ name, doc, sceneHint })
+  const entities = parseDbTables(doc, sceneHint)
+  const entityNames = entities.map((e) => e.name)
+  const onlyPlaceholder = entities.length === 1 && entities[0].name === 'item'
   const tree = buildTree(files)
   store.right.generated = { tree, files, generatedAt: Date.now(), root: name }
+  // 同步更新打包/部署用的项目名与预览窗口标题，避免仍显示旧 branchName（如 fanganfenzhi-2）
+  store.right.pack.name = name
   // Electron 模式下把工程写到本地磁盘（userData/generated/<root>）
   if (runtime.fs?.writeProject) {
     try {
@@ -170,7 +197,11 @@ export async function generateProject() {
     }
   }
   store.right.dirty = false
-  toast(`同源全栈工程已生成：${files.length} 个文件（后端/Web/桌面/移动）`)
+  if (onlyPlaceholder) {
+    toast('⚠️ 只生成默认占位表 Item：设计文档未包含可识别的「数据库表结构」章节，请在左侧补充业务需求后再生成')
+  } else {
+    toast(`同源全栈工程已生成：${files.length} 个文件，项目名「${name}」，应用类型「${appType}」，解析到 ${entities.length} 个实体（${entityNames.join('、')}）`)
+  }
 }
 
 // ---------- 对话式代码修改（PRD 二期「边做边改 / 边改边做」）----------
@@ -468,7 +499,7 @@ export function stopMonitor() {
 // ---------- 生成前端实时预览（PRD 二期「边改边看」）----------
 // 仅桌面端（Electron）可用：在本地启动生成前端的 Vite dev server（HMR），返回访问地址。
 // 浏览器预览模式无 runtime.preview，明确提示需桌面端。
-export async function startPreview() {
+export async function startPreview(mode = 'dev', shell = 'embed') {
   const root = store.right.generated?.root
   if (!root) {
     toast('请先在右侧「代码工程」生成同源全栈工程')
@@ -481,10 +512,19 @@ export async function startPreview() {
   store.right.preview.running = true
   store.right.preview.error = ''
   store.right.preview.url = ''
+  store.right.preview.log = ''
+  store.right.preview.mode = mode
   try {
-    const r = await runtime.preview.start({ root, port: 5180 })
-    if (r.ok) store.right.preview.url = r.url
-    else store.right.preview.error = r.error
+    const r = await runtime.preview.start({ root, port: 5180, mode })
+    if (r.ok) {
+      store.right.preview.url = r.url
+      // ③ 桌面 App 形态预览：在独立 Electron 窗口打开生成的 web 应用
+      if (shell === 'app' && runtime.preview.openApp) {
+        const title = store.right.pack?.name || root || '生成应用预览'
+        const oa = await runtime.preview.openApp({ url: r.url, title })
+        if (!oa.ok) store.right.preview.error = '桌面窗口打开失败：' + oa.error
+      }
+    } else store.right.preview.error = r.error
   } catch (e) {
     store.right.preview.error = e.message
   } finally {

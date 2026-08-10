@@ -1,22 +1,27 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
-import { store, newBranch, switchBranch, activeBranch, saveSnapshot, pushDocToRight, setDraftDoc, reviseDoc, editCode, toast } from '../store.js'
-import { runtime } from '../runtime.js'
-import { MODE_LABELS } from '../ai/prompts.js'
+import { store, newBranch, switchBranch, activeBranch, saveSnapshot, pushDocToRight, setDraftDoc, reviseDoc, editCode, toast, generateProject, startPreview, setRightTab } from '../store.js'
+import { parseDbTables } from '../codegen.js'
+import { runtime, PLATFORM } from '../runtime.js'
 import { readFileAsText, readImage, buildContext, formatSize } from '../ai/fileReader.js'
 import MarkdownView from './MarkdownView.vue'
+import aiAvatar from '../assets/ai-avatar.svg'
+import userAvatar from '../assets/user-avatar.svg'
 
 const TAGS = ['需求', '数据库', '接口', '部署', '风险']
 const input = ref('')
 const loading = ref(false)
+const autoRunning = ref(false)
 const lastDoc = ref('')
+const internalDoc = ref('')   // 左侧理解确认后由后台生成的设计文档（不直接展示给用户看）
 const bodyEl = ref(null)
 const branch = computed(() => activeBranch())
 const composeMode = ref('chat')
-const hasDoc = computed(() => !!(store.right.doc || store.right.draft))
+const hasDoc = computed(() => !!(internalDoc.value || store.right.doc || store.right.draft))
 
 // ---------- 本地文件上传（客户文档 → 大模型分析）----------
 const attachments = ref([])
+const userSceneHint = ref('')  // 累积用户原始需求/文档文本，作为场景推断线索
 const fileInput = ref(null)
 const dragOver = ref(false)
 const reading = ref(false)
@@ -85,6 +90,34 @@ async function addImages(fileList) {
 function removeImage(i) {
   imageAttachments.value.splice(i, 1)
 }
+// 直接插入一张 dataURL 图片（用于系统截图返回的结果，无需经过 FileReader）
+function addImageDataUrl(dataUrl, name) {
+  const comma = dataUrl.indexOf(',')
+  const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+  const size = Math.max(0, Math.round(b64.length * 0.75)) // base64 长度 ≈ 字节数 * 4/3
+  imageAttachments.value.push({ name: name || '截图.png', size, dataUrl })
+}
+// 「📷 截图」：桌面端真正调系统截屏；浏览器 / 不支持的平台降级为选文件上传
+async function takeScreenshot() {
+  if (PLATFORM === 'electron' && runtime.capture && runtime.capture.screenshot) {
+    const r = await runtime.capture.screenshot()
+    if (r.ok) {
+      addImageDataUrl(r.dataUrl, r.name)
+      return
+    }
+    if (r.reason === 'cancelled') return // 用户按 Esc 取消，静默处理
+    if (r.reason === 'platform-unsupported') {
+      toast('当前系统暂不支持系统截图，已改为选择图片文件')
+      pickImages()
+      return
+    }
+    toast('截图失败：' + (r.error || r.reason || '未知错误'))
+    return
+  }
+  // 浏览器环境无系统截图能力，降级为选文件上传
+  toast('浏览器环境不支持系统截图，请从文件选择图片')
+  pickImages()
+}
 // 微信式：在输入框直接 Ctrl+V 粘贴截图（浏览器从剪贴板读图）
 async function onPaste(e) {
   const items = e.clipboardData?.items
@@ -121,6 +154,7 @@ function clearChat() {
   if (window.confirm('确定清空当前方案的对话记录吗？此操作不可撤销。')) {
     b.messages = []
     lastDoc.value = ''
+    internalDoc.value = ''
     imageAttachments.value = []
     toast('对话已清空')
     scrollDown()
@@ -142,17 +176,14 @@ async function send(text) {
   // 微信式：允许「只发图」或「文字 + 图」；两者皆空则不发送
   if (!content && !imgs.length) return
   if (loading.value) return
-  // 当前默认模型为纯文本，无法识别图片内容，给 AI 一句提示避免它误以为能看图
-  // 需求对齐模式：用户回复确认词 → 直接进入开发（生成设计文档并推送右窗）
-  if (b.mode === 'align' && !b.confirmed && content && isConfirmText(content)) {
+  // 回复确认词（确认 / 可以 / 开始 …）→ 左侧直接生成成品
+  if (isConfirmText(content)) {
     b.messages.push({ role: 'user', content, tags: [] })
-    b.confirmed = true
     input.value = ''
     attachments.value = []
     imageAttachments.value = []
     scrollDown()
-    await genDoc()
-    finalize()
+    await runFullAuto()
     return
   }
   let ctx = contextText.value
@@ -171,8 +202,12 @@ async function send(text) {
   })
   loading.value = true
   try {
-    const reply = await runtime.ai.chat({ messages: b.messages, mode: b.mode, config: store.config, context: ctx })
+    // 默认走「豆包式理解对话」：AI 只复述理解、澄清问题，不输出 PRD/库表/部署/代码。
+    const reply = await runtime.ai.chat({ messages: b.messages, mode: 'chat', config: store.config, context: ctx })
     b.messages.push(reply)
+    // 累积原始需求文本作为场景线索，用于后续内部生成设计文档时推断业务场景。
+    const hint = (content ? content + '\n' : '') + (ctx || '')
+    userSceneHint.value = (userSceneHint.value ? userSceneHint.value + '\n' : '') + hint
   } catch (e) {
     b.messages.push({ role: 'assistant', content: '⚠️ 调用失败：' + e.message })
   } finally {
@@ -181,47 +216,27 @@ async function send(text) {
   }
 }
 
-// 上传文档分析：把客户文档作为上下文，让模型做结构化抽取
-async function analyzeDoc() {
-  if (!attachments.value.length) {
-    toast('请先点 📎 上传客户文档')
-    return
-  }
-  const b = ensureBranch()
-  const ctx = contextText.value
-  const content = (input.value.trim() || '请分析以上上传文档，并提炼可转化为软件系统的需求、实体、字段与业务流程。')
-  input.value = ''
-  attachments.value = []
-  imageAttachments.value = []
-  b.messages.push({ role: 'user', content: '📎 分析上传文档：' + content, tags: [] })
-  loading.value = true
-  try {
-    const reply = await runtime.ai.chat({ messages: b.messages, mode: 'analyze', config: store.config, context: ctx })
-    b.messages.push(reply)
-  } catch (e) {
-    b.messages.push({ role: 'assistant', content: '⚠️ 调用失败：' + e.message })
-  } finally {
-    loading.value = false
-    scrollDown()
-  }
-}
+// 注：「理解并完善」已并入默认发消息流程（send 直接用 doc 模式理解补全，并自动推送开发窗口），无需单独按钮。
 
-async function genDoc() {
+async function genDoc(silent = false) {
   const b = ensureBranch()
   if (!b.messages.length) {
     toast('请先输入需求再生成文档')
-    return
+    return false
   }
   const ctx = contextText.value
   loading.value = true
   try {
     const reply = await runtime.ai.chat({ messages: b.messages, mode: 'doc', config: store.config, context: ctx })
-    b.messages.push(reply)
+    if (!silent) b.messages.push(reply)
+    internalDoc.value = reply.content
     lastDoc.value = reply.content
     setDraftDoc(reply.content)
-    toast('设计文档已生成，可点「定稿推送」')
+    if (!silent) toast('设计文档已生成，可点「定稿推送」')
+    return true
   } catch (e) {
     toast('生成失败：' + e.message)
+    return false
   } finally {
     loading.value = false
     attachments.value = []
@@ -230,16 +245,103 @@ async function genDoc() {
   }
 }
 
-function finalize() {
+// 从左侧完整对话中重建场景线索，作为应用类型/项目名推断的最可靠来源。
+// 必须同时收集 user 原始输入 + AI 的理解/澄清回复，因为用户自己可能只说「钢结构工具」
+// 而 AI 的理解里会出现「图纸/CAD/钢结构」等关键信号，漏掉 AI 的理解就会导致误判成 admin。
+function buildSceneHintFromConversation(branch) {
+  const texts = (branch?.messages || [])
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => String(m.content || ''))
+    .filter((t) => {
+      const trimmed = t.trim()
+      // 过滤掉状态提示、纯确认词、过短的系统消息
+      if (trimmed.length < 8) return false
+      if (/^✅ 已收到确认|^⚠️|^【需求自检】|^当前为离线 Mock/i.test(trimmed)) return false
+      if (/^确认|^ok|^可以|^开始|^go|^yes/i.test(trimmed) && trimmed.length < 30) return false
+      return true
+    })
+  return texts.join('\n')
+}
+
+function finalize(sceneHint = userSceneHint.value) {
   const b = activeBranch()
   if (!b) return
-  const doc = lastDoc.value || b.messages.find((m) => m.role === 'assistant')?.content || ''
+  const doc = internalDoc.value || lastDoc.value || b.messages.find((m) => m.role === 'assistant')?.content || ''
   if (!doc) {
     toast('请先生成设计文档')
     return
   }
   saveSnapshot(b.name, doc)
-  pushDocToRight(b.name, doc)
+  pushDocToRight(b.name, doc, sceneHint)
+}
+
+// 全自动闭环：左侧理解确认后，后台直接生成工程并打开成品预览，
+// 中间设计文档（PRD/库表/部署/架构）不推到右侧展示，用户只看成品。
+async function runFullAuto() {
+  const b = ensureBranch()
+  if (!b.messages.length && !internalDoc.value) { toast('请先在下方输入需求或上传文档'); return }
+  if (loading.value || autoRunning.value) return
+  autoRunning.value = true
+  try {
+    b.messages.push({ role: 'assistant', content: '✅ 已收到确认，正在后台生成成品，请稍候…' })
+    scrollDown()
+    // 若尚未生成内部设计文档，则后台静默生成（用户看不到这篇 PRD/库表/部署文档，只用于代码生成）
+    if (!internalDoc.value) {
+      toast('正在根据理解生成设计文档…')
+      const ok = await genDoc(true)
+      if (!ok) return
+    }
+    // 校验 AI 是否真的生成了可识别的业务表；如果只解析到占位 Item，用聚焦 prompt 再试一次库表生成
+    let entities = parseDbTables(internalDoc.value, userSceneHint.value)
+    const onlyPlaceholder = entities.length === 1 && entities[0].name === 'item'
+    if (onlyPlaceholder && userSceneHint.value) {
+      toast('设计文档缺少业务表，正在重新生成库表…')
+      const tableReply = await runtime.ai.chat({
+        messages: [
+          ...b.messages,
+          {
+            role: 'user',
+            content:
+              '请只输出「数据库表结构」章节，基于以上业务需求提炼出所有业务实体表。\n' +
+              '格式要求：先写二级标题 ## 数据库表结构，再写三级标题 ### 表名，每个字段一行：| 表名 | 字段名 | 类型 | 说明 |。\n' +
+              '类型只能写 string / int / bool / date / text。\n' +
+              '如果需求涉及项目、图纸、产品/物料、订单/工单、人员/用户等，必须生成对应实体表。\n' +
+              '不要输出 SQL 代码块、不要输出列表式字段、不要写 varchar/INTEGER/字符串/整数等类型。'
+          }
+        ],
+        mode: 'doc',
+        config: store.config,
+        context: userSceneHint.value
+      })
+      if (tableReply?.content) {
+        internalDoc.value = (internalDoc.value || '') + '\n\n' + tableReply.content
+        lastDoc.value = internalDoc.value
+        setDraftDoc(internalDoc.value)
+        entities = parseDbTables(internalDoc.value, userSceneHint.value)
+      }
+    }
+    // 用完整对话（用户原始输入 + AI 理解）作为场景线索，确保「画图/CAD/图纸/钢结构」
+    // 需求被识别为 canvas 画板应用，而不是被后续生成的 admin 风格文档带偏。
+    const sceneHint = buildSceneHintFromConversation(b) || userSceneHint.value
+    console.log('[runFullAuto] sceneHint 长度=', sceneHint.length, '前 120 字=', sceneHint.slice(0, 120))
+    // 中间文档仍存入 store 供保存/重新生成使用，但不在右侧「代码工程」面板渲染给用户看
+    store.right.doc = internalDoc.value
+    store.right.docMeta = { branchName: b.name, sceneHint, pushedAt: Date.now() }
+    toast('正在自动生成全栈工程…')
+    await generateProject({ doc: internalDoc.value, sceneHint })
+    if (!store.right.generated) return
+    toast('工程已生成，正在启动成品预览…')
+    setRightTab('preview')
+    await stopPreview()
+    await startPreview('build', 'embed')
+    if (store.right.preview.error) {
+      toast('⚠️ 预览启动失败：' + store.right.preview.error)
+    } else {
+      toast('✅ 成品已生成并启动预览')
+    }
+  } finally {
+    autoRunning.value = false
+  }
 }
 
 async function selfCheck() {
@@ -313,14 +415,7 @@ function isConfirmText(t) {
     .some((w) => t.toLowerCase().includes(w.toLowerCase()))
 }
 
-// 确认并开发：生成设计文档 + 推送右窗（开发窗口）
-async function confirmAndDevelop() {
-  const b = activeBranch()
-  if (!b || b.confirmed) return
-  b.confirmed = true
-  await genDoc()
-  finalize()
-}
+// 确认并开发已并入 send 的确认词检测与底部「确认并生成成品」按钮（均调用 runFullAuto）。
 
 function toggleTag(msg, tag) {
   if (!msg.tags) msg.tags = []
@@ -353,9 +448,6 @@ watch(() => branch.value?.messages.length, scrollDown)
         <option v-for="b in store.branches" :key="b.id" :value="b.id">{{ b.name }}</option>
       </select>
       <button @click="newBranch()">+ 分支</button>
-      <select v-if="branch" v-model="branch.mode" style="width:auto">
-        <option v-for="(label, key) in MODE_LABELS" :key="key" :value="key">{{ label }}</option>
-      </select>
       <button class="head-btn" @click="clearChat" title="清空当前方案的对话记录">🗑️ 清空</button>
     </div>
 
@@ -363,35 +455,41 @@ watch(() => branch.value?.messages.length, scrollDown)
       <div v-if="!store.branches.length" class="muted" style="text-align:center;margin-top:40px">
         还没有方案分支。在下方输入需求，或点击「+ 分支」开始。
       </div>
-      <div v-for="(m, idx) in (branch?.messages || [])" :key="idx" class="msg" :class="m.role">
-        <div class="role">{{ m.role === 'user' ? '你' : 'AI' }}</div>
-        <div v-if="m.thinking" class="think">
-          <details open>
-            <summary>💭 思考过程</summary>
-            <div class="think-body">{{ m.thinking }}</div>
-          </details>
-        </div>
-        <MarkdownView v-if="m.role === 'assistant'" :source="m.content" />
-        <div v-else style="white-space:pre-wrap">{{ m.content }}</div>
-        <div v-if="m.images && m.images.length" class="msg-images">
-          <img v-for="(img, i) in m.images" :key="i" :src="img.dataUrl" :alt="img.name" class="msg-img" @click="openImage(img.dataUrl)" title="点击放大" />
-        </div>
-        <div class="tags" v-if="m.role === 'user'">
-          <span v-for="t in TAGS" :key="t" class="tag" :style="m.tags?.includes(t) ? 'background:#bfdbfe;color:#1d4ed8' : ''" @click="toggleTag(m, t)">{{ t }}</span>
-        </div>
-        <div v-if="m.role === 'assistant' && branch?.mode === 'align' && !branch?.confirmed" class="confirm-bar">
-          <button class="btn-confirm primary" @click="confirmAndDevelop">✅ 确认并开发</button>
-          <span class="muted">认可理解后点击，或回复「确认」</span>
+      <div v-for="(m, idx) in (branch?.messages || [])" :key="idx" class="wx-msg" :class="m.role">
+        <img :src="m.role === 'assistant' ? aiAvatar : userAvatar" class="wx-avatar" alt="avatar" />
+        <div class="wx-content">
+          <div class="wx-name">{{ m.role === 'assistant' ? 'AI' : '我' }}</div>
+          <div v-if="m.thinking" class="think">
+            <details open>
+              <summary>💭 思考过程</summary>
+              <div class="think-body">{{ m.thinking }}</div>
+            </details>
+          </div>
+          <div class="wx-bubble" :class="m.role">
+            <MarkdownView v-if="m.role === 'assistant'" :source="m.content" />
+            <div v-else style="white-space:pre-wrap">{{ m.content }}</div>
+          </div>
+          <div v-if="m.images && m.images.length" class="msg-images">
+            <img v-for="(img, i) in m.images" :key="i" :src="img.dataUrl" :alt="img.name" class="msg-img" @click="openImage(img.dataUrl)" title="点击放大" />
+          </div>
+          <div class="tags" v-if="m.role === 'user'">
+            <span v-for="t in TAGS" :key="t" class="tag" :style="m.tags?.includes(t) ? 'background:#bfdbfe;color:#1d4ed8' : ''" @click="toggleTag(m, t)">{{ t }}</span>
+          </div>
         </div>
       </div>
-      <div v-if="loading" class="muted" style="padding:6px 2px">AI 生成中…</div>
+      <div v-if="loading || autoRunning" class="typing-row">
+        <img :src="aiAvatar" class="typing-avatar" alt="AI" />
+        <div class="typing-bubble">
+          <span class="dot-flashing"></span>
+          <span class="dot-flashing"></span>
+          <span class="dot-flashing"></span>
+        </div>
+      </div>
     </div>
 
     <div class="panel-foot">
-      <button @click="genDoc" :disabled="loading">📄 生成设计文档</button>
-      <button class="primary" @click="finalize">✅ 定稿推送开发窗口</button>
-      <button @click="selfCheck" :disabled="loading">🔍 需求自检</button>
-      <button @click="analyzeDoc" :disabled="loading || !attachments.length" :title="attachments.length ? '基于上传文档做分析' : '请先上传文档'">📎 分析文档</button>
+      <button class="primary big" @click="runFullAuto" :disabled="loading || autoRunning">✅ 确认并生成成品</button>
+      <span class="foot-hint">左侧像豆包一样聊清楚需求；理解无误后点这里，后台自动生成代码并出成品</span>
     </div>
     <div
       class="composer"
@@ -442,15 +540,9 @@ watch(() => branch.value?.messages.length, scrollDown)
 
       <textarea
         v-model="input"
-        :placeholder="composeMode === 'edit'
-          ? '描述你想对代码做的修改，如：给后端加按名称搜索的接口 / 把列表页改成卡片式 / 加一个登录页（可先在右侧选中目标文件）'
-          : composeMode === 'revise'
-          ? '描述要做的修改，如：给 user 表加 phone/email 字段'
-          : branch?.mode === 'align'
-          ? '用大白话说你的业务想法就行——AI 会先思考、复述理解并和你确认，确认后才进入开发'
-          : '描述你的业务想法，或直接粘贴客户文档内容…\nEnter 发送，Shift+Enter 换行，支持拖拽上传文档'
-        "
         @keydown.enter.exact.prevent="send()"
+        placeholder="像跟豆包聊天一样描述业务想法，或粘贴客户文档——我会先理解、再确认，最后生成成品
+Enter 发送，Shift+Enter 换行，支持拖拽上传文档"
       ></textarea>
 
       <div class="composer-toolbar">
@@ -458,7 +550,8 @@ watch(() => branch.value?.messages.length, scrollDown)
           <button class="btn-upload" @click="pickFiles" :disabled="reading" title="上传 txt / md / pdf / docx / csv / 代码">
             {{ reading ? '读取中…' : '📎 上传文档' }}
           </button>
-          <button class="btn-upload" @click="pickImages" title="截图 / 上传图片：可选图片文件，或直接 Ctrl+V 粘贴截图">📷 截图</button>
+          <button class="btn-upload" @click="takeScreenshot" title="截图：调用系统截屏（Mac 支持），截完自动进对话">📷 截图</button>
+          <button class="btn-upload" @click="pickImages" title="选择本地图片文件上传（所有系统可用）">🖼️ 图片</button>
           <button v-if="attachments.length" class="btn-text" @click="attachments = []" title="清空已选附件">清空</button>
         </div>
         <div class="toolbar-center">
@@ -627,18 +720,112 @@ watch(() => branch.value?.messages.length, scrollDown)
   background: #dc2626;
 }
 
+/* 左侧对话区背景：微信聊天背景灰 */
+.panel-body {
+  background: #f5f5f5;
+  padding: 16px 12px;
+}
+
+/* ---------- 微信聊天风格 ---------- */
+.wx-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 18px;
+  width: 100%;
+}
+.wx-msg.user {
+  flex-direction: row-reverse;
+}
+
+.wx-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #e2e8f0;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+
+.wx-content {
+  display: flex;
+  flex-direction: column;
+  max-width: min(70%, calc(100% - 52px));
+}
+.wx-msg.user > .wx-content {
+  align-items: flex-end;
+  text-align: left;
+}
+.wx-msg.assistant > .wx-content {
+  align-items: flex-start;
+}
+
+.wx-name {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 3px;
+  padding: 0 2px;
+  user-select: none;
+}
+
+.wx-bubble {
+  position: relative;
+  padding: 9px 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #111;
+  border-radius: 4px 12px 12px 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  word-break: break-word;
+}
+
+/* 对方气泡：浅灰底 */
+.wx-bubble.assistant {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+}
+
+/* 我的气泡：微信绿 */
+.wx-bubble.user {
+  background: #95ec69;
+  border: 1px solid #7ed957;
+  border-radius: 12px 4px 12px 12px;
+}
+
+/* 让 MarkdownView 里的段落间距更紧凑 */
+.wx-bubble :deep(p) {
+  margin: 0 0 8px 0;
+}
+.wx-bubble :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.wx-bubble :deep(pre) {
+  margin: 6px 0 0;
+  border-radius: 6px;
+}
+.wx-bubble :deep(ul),
+.wx-bubble :deep(ol) {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.wx-bubble :deep(li) {
+  margin-bottom: 3px;
+}
+
 /* 消息内图片（已发送，像微信图片气泡，可点击放大） */
 .msg-images {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+  max-width: 100%;
 }
 .msg-img {
-  max-width: 180px;
-  max-height: 180px;
+  max-width: 160px;
+  max-height: 160px;
   border-radius: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(0, 0, 0, 0.08);
   cursor: zoom-in;
   object-fit: cover;
 }
@@ -648,11 +835,13 @@ watch(() => branch.value?.messages.length, scrollDown)
 
 /* 思考过程折叠块（对齐交互：展示 AI 的推理链） */
 .think {
-  margin: 4px 0 8px;
-  border: 1px solid var(--border);
+  margin: 0 0 6px;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   background: #f8fafc;
   overflow: hidden;
+  width: 100%;
+  max-width: 420px;
 }
 .think summary {
   cursor: pointer;
@@ -671,7 +860,7 @@ watch(() => branch.value?.messages.length, scrollDown)
   color: #475569;
   white-space: pre-wrap;
   line-height: 1.6;
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed #e5e5e5;
   padding-top: 8px;
 }
 
@@ -685,6 +874,8 @@ watch(() => branch.value?.messages.length, scrollDown)
   background: #ecfdf5;
   border: 1px solid #a7f3d0;
   border-radius: 8px;
+  width: 100%;
+  max-width: 420px;
 }
 .btn-confirm {
   font-size: 13px;
@@ -764,6 +955,28 @@ watch(() => branch.value?.messages.length, scrollDown)
   font-weight: 500;
 }
 
+/* 底部唯一主操作：确认并生成成品（醒目、占满宽度）*/
+.panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.panel-foot .big {
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 12px 26px;
+  border-radius: 10px;
+}
+.foot-hint {
+  font-size: 12.5px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
 /* 头部清空按钮：出错/重来时一键重置，醒目红色 */
 .head-btn {
   margin-left: auto;
@@ -779,5 +992,50 @@ watch(() => branch.value?.messages.length, scrollDown)
   background: #fee2e2;
   border-color: #ef4444;
   color: #991b1b;
+}
+
+/* 微信风格：AI 正在输入 */
+.typing-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 12px 18px;
+}
+.typing-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #e2e8f0;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+.typing-bubble {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 4px 12px 12px 12px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.dot-flashing {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+  animation: dotFlashing 1.2s infinite linear alternate;
+}
+.dot-flashing:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.dot-flashing:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes dotFlashing {
+  0% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.25; transform: scale(0.85); }
 }
 </style>
