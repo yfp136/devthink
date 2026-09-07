@@ -75,10 +75,30 @@ target_link_libraries(sm_core PUBLIC sm_sqlite3)
 # sm_engines：六引擎骨架（Phase 1 空壳 + registry）
 # ============================================================================
 file(GLOB SM_ENGINE_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/engines/*.cpp")
-file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/engines/timeline/*.cpp" "${SM_SRC_DIR}/engines/media/*.cpp" "${SM_SRC_DIR}/engines/scene/*.cpp" "${SM_SRC_DIR}/engines/playlist/*.cpp" "${SM_SRC_DIR}/engines/media_lib/*.cpp")
+file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS
+  "${SM_SRC_DIR}/engines/timeline/*.cpp"
+  "${SM_SRC_DIR}/engines/media/*.cpp"
+  "${SM_SRC_DIR}/engines/scene/*.cpp"
+  "${SM_SRC_DIR}/engines/playlist/*.cpp"
+  "${SM_SRC_DIR}/engines/media_lib/*.cpp"
+  "${SM_SRC_DIR}/platform/*.cpp")
 list(APPEND SM_ENGINE_SOURCES ${SM_ENGINE_SUB_SOURCES})
 add_library(sm_engines STATIC ${SM_ENGINE_SOURCES})
 target_link_libraries(sm_engines PUBLIC sm_core)
+
+# ---- Phase 2: FFmpeg 条件链接（仅 Windows + vcpkg 可用时）----
+if(WIN32)
+  find_package(FFMPEG QUIET COMPONENTS avcodec avformat avutil)
+  if(FFMPEG_FOUND)
+    target_link_libraries(sm_engines PRIVATE
+      ${FFMPEG_LIBRARIES})
+    target_include_directories(sm_engines PRIVATE ${FFMPEG_INCLUDE_DIRS})
+    target_compile_definitions(sm_engines PRIVATE SM_HAS_FFMPEG=1)
+    message(STATUS "FFmpeg found — enabling real media backend")
+  else()
+    message(STATUS "FFmpeg not found — using stub media backend")
+  endif()
+endif()
 
 # ---- Windows 引擎插件 DLL（规格 §3.3，仅 WIN32 构建）----------------------
 # 每个引擎一个独立 DLL，均实例化同一空壳模板（engine_plugin.cpp），

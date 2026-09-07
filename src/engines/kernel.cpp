@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstdio>
 
+#include "platform/media_backend.h"
+
 #include "core/error_codes.h"
 #include "core/msg_bus.h"
 #include "core/util.h"
@@ -115,15 +117,46 @@ void Kernel::wire_callbacks() {
                              {{"fade_ms", fade_ms}, {"recall_mode", recall_mode}}));
       });
 
-  // ---- MediaLibrary stub 回调 ----
-  media_lib_->set_copy_cb([](const std::string&, const std::string&) {
-    return true;  // P1 stub：不实际复制文件
+  // ---- MediaLibrary 回调：接入平台适配层 ----
+  media_lib_->set_copy_cb([](const std::string& src, const std::string& dst) {
+    // 文件复制：跨平台实现
+    FILE* in = std::fopen(src.c_str(), "rb");
+    if (!in) return false;
+    FILE* out = std::fopen(dst.c_str(), "wb");
+    if (!out) { std::fclose(in); return false; }
+    char buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0)
+      std::fwrite(buf, 1, n, out);
+    std::fclose(in);
+    std::fclose(out);
+    return true;
   });
-  media_lib_->set_probe_cb([](const std::string&) -> json {
-    return json::object();  // P1 stub：无实际探测
+  media_lib_->set_probe_cb([](const std::string& path) -> json {
+    return platform::probe_media(path);
   });
-  media_lib_->set_thumb_cb([](const std::string&, int64_t) -> std::string {
-    return "";  // P1 stub：无缩略图
+  media_lib_->set_thumb_cb([](const std::string& path, int64_t dur) -> std::string {
+    return platform::generate_thumbnail(path, dur);
+  });
+
+  // ---- MediaEngine 回调：接入平台适配层 ----
+  media_->set_open_cb([](const std::string& path, int64_t trim) -> bool {
+    return platform::open_media_file(path, trim);
+  });
+  media_->set_start_cb([](double gain_db, int64_t fade_in_ms) {
+    platform::start_media_playback(gain_db, fade_in_ms);
+  });
+  media_->set_stop_cb([](int64_t fade_out_ms) {
+    platform::stop_media_playback(fade_out_ms);
+  });
+  media_->set_pos_cb([]() -> int64_t {
+    return platform::get_media_pos_ms();
+  });
+  media_->set_duration_cb([](const std::string& path) -> int64_t {
+    return platform::get_media_duration_ms(path);
+  });
+  media_->set_close_cb([]() {
+    platform::close_media_file();
   });
 }
 

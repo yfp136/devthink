@@ -189,12 +189,14 @@ HttpResponse HttpServer::dispatch(const HttpRequest& req) {
       return r.handler(req);
   }
 
-  // 前缀匹配（用于静态文件）
-  for (const auto& r : routes_) {
-    if (r.method == req.method &&
-        r.path.back() == '/' &&
-        req.path_only.compare(0, r.path.size(), r.path) == 0)
-      return r.handler(req);
+  // 前缀匹配（用于静态文件），但 /api/ 路径不参与前缀回退
+  if (req.path_only.compare(0, 5, "/api/") != 0) {
+    for (const auto& r : routes_) {
+      if (r.method == req.method &&
+          r.path.back() == '/' &&
+          req.path_only.compare(0, r.path.size(), r.path) == 0)
+        return r.handler(req);
+    }
   }
 
   HttpResponse r;
