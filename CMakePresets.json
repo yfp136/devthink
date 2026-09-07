@@ -1,0 +1,72 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 27, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base-host",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SM_BUILD_TESTS": "ON",
+        "SM_BUILD_APP": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base-host",
+      "displayName": "Debug（本机开发机）",
+      "description": "规格 4.2：cmake --preset debug && cmake --build --preset debug && ctest --preset debug"
+    },
+    {
+      "name": "release",
+      "inherits": "base-host",
+      "displayName": "Release（本机开发机）",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SM_BUILD_TESTS": "ON",
+        "SM_BUILD_APP": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "Windows Debug（MSVC 2022）",
+      "description": "在“x64 Native Tools Command Prompt for VS 2022”中执行；vcpkg 依赖时追加 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\\scripts\\buildsystems\\vcpkg.cmake，详见 docs/BUILD_WINDOWS.md",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SM_BUILD_TESTS": "ON",
+        "SM_BUILD_APP": "ON",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Windows Release（MSVC 2022）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SM_BUILD_TESTS": "ON",
+        "SM_BUILD_APP": "ON",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
+    { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release" }
+  ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release", "output": { "outputOnFailure": true } }
+  ]
+}

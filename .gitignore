@@ -1,0 +1,22 @@
+# 构建产物
+build/
+cmake-build-*/
+.cache/
+
+# 工具与编辑器
+CMakeUserPresets.json
+.vscode/
+.idea/
+*.user
+*.suo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 运行期产物（本地调试）
+*.showproj
+*.db
+*.db-wal
+*.db-shm
+*.msglog

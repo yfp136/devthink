@@ -1,0 +1,50 @@
+# ShowMaster Windows CI（规格 4.2 DoD：Windows 上 ctest 全绿 + 引擎 DLL 构建）
+# 触发：push / PR。运行器 windows-latest 自带 VS2022 + vcpkg + Ninja。
+# 本地等价流程见 docs/BUILD_WINDOWS.md §3/§5。
+name: windows-build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install sqlite3 (vcpkg)
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sqlite3:x64-windows
+
+      - name: Enable MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure (windows-msvc-debug preset)
+        shell: pwsh
+        run: |
+          cmake --preset windows-msvc-debug `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-msvc-debug
+
+      - name: Test (ctest)
+        shell: pwsh
+        run: ctest --preset windows-msvc-debug --output-on-failure
+
+      - name: Upload binaries (kernel + engine DLLs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: showmaster-win-bin
+          path: |
+            build/windows-msvc-debug/bin/*.dll
+            build/windows-msvc-debug/sm_kernel_smoke.exe
+          if-no-files-found: error
