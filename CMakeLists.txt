@@ -75,7 +75,7 @@ target_link_libraries(sm_core PUBLIC sm_sqlite3)
 # sm_engines：六引擎骨架（Phase 1 空壳 + registry）
 # ============================================================================
 file(GLOB SM_ENGINE_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/engines/*.cpp")
-file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/engines/timeline/*.cpp")
+file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/engines/timeline/*.cpp" "${SM_SRC_DIR}/engines/media/*.cpp")
 list(APPEND SM_ENGINE_SOURCES ${SM_ENGINE_SUB_SOURCES})
 add_library(sm_engines STATIC ${SM_ENGINE_SOURCES})
 target_link_libraries(sm_engines PUBLIC sm_core)

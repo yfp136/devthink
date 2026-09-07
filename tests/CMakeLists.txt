@@ -25,3 +25,6 @@ sm_add_unit_test(test_web sm_web)
 
 # M5 时间线调度器（§7 六轨调度 + §10.6 条目状态机）
 sm_add_unit_test(test_timeline sm_engines)
+
+# M2 媒体引擎（§10.2 状态机 + 增益/淡变包络 + 单源互斥）
+sm_add_unit_test(test_media sm_engines)
