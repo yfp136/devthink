@@ -31,3 +31,6 @@ sm_add_unit_test(test_media sm_engines)
 
 # M3 场景快照（§10.3 保存/召回/淡变/引用保护/列表）
 sm_add_unit_test(test_scene sm_engines)
+
+# M4 播放列表执行器（§10.5 自动演出 + GO + trigger_mode + loop_mode）
+sm_add_unit_test(test_playlist sm_engines)
