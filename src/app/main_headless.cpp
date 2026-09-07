@@ -1,5 +1,5 @@
 // ShowMaster Headless 服务器模式入口
-// 工控机/服务器无界面常驻运行：启动内核 + 引擎空壳 + Web Server。
+// 工控机/服务器无界面常驻运行：启动 Kernel(M1-M5引擎) + Web Server。
 // 用法：sm_headless [port=8080]
 // 浏览器访问 http://<服务器IP>:<port> 即可远程管控。
 // 开机自启：注册为 Windows Service 或 systemd 单元。
@@ -10,11 +10,10 @@
 #include <cstring>
 #include <thread>
 
-#include "core/envelope.h"
+#include "engines/kernel.h"
 #include "core/msg_bus.h"
 #include "core/op_dict.h"
 #include "engines/engine_registry.h"
-#include "engines/plugins/engine_noop.h"
 #include "web/auth.h"
 #include "web/http_server.h"
 #include "web/remote_queue.h"
@@ -36,33 +35,17 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // 注册 Ctrl+C / SIGTERM
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  // ---- 内核初始化 ----
-  sm::MsgBus bus;
-  sm::HeartbeatMonitor hb;
+  // ---- Kernel 初始化（M1-M5 全部引擎）----
+  sm::Kernel kernel;
+  kernel.init();
+  kernel.start();
 
-  // 注册所有引擎到消息总线（Phase 1 空壳）
-  std::vector<std::unique_ptr<sm::stub::NoopEngine>> engines;
-  for (const auto& desc : sm::engine_registry()) {
-    auto eng = std::make_unique<sm::stub::NoopEngine>(desc.id);
-    EngineConfig cfg;
-    eng->init(cfg);
-    eng->start();
-    eng->setSink(nullptr);  // 空壳不产生事件
-    engines.push_back(std::move(eng));
-    hb.note_heartbeat(desc.id, 0);  // 初始在线
-    std::printf("[engine] %s online (%s)\n", desc.id, desc.module);
-  }
-
-  // 总线默认 sink：打印未路由的消息
-  bus.set_default_sink([](const sm::Envelope& e) {
-    // 远程指令到达总线后由引擎处理；空壳不处理，仅记录
-    if (e.type == "cmd")
-      std::printf("[bus] cmd %s -> %s\n", e.op.c_str(), e.dst.c_str());
-  });
+  std::printf("[kernel] M1-M5 引擎全部在线\n");
+  std::printf("[kernel]   M1 素材库 / M2 媒体引擎 / M3 场景快照\n");
+  std::printf("[kernel]   M4 播放列表 / M5 时间线调度器\n");
 
   // ---- Web 远控层 ----
   sm::web::Auth auth;
@@ -70,22 +53,21 @@ int main(int argc, char** argv) {
 
   sm::web::RemoteQueue queue(256);
 
-  sm::web::WebGateway gateway(auth, queue, hb);
+  sm::web::WebGateway gateway(auth, queue, kernel.heartbeat());
   sm::web::HttpServer server;
 
-  // 状态提供者：返回运行态 JSON
-  gateway.set_status_provider([]() -> std::string {
-    return R"({"mode":"headless","engines_running":7})";
+  // 状态提供者：从 Kernel 获取实时状态
+  gateway.set_status_provider([&]() -> std::string {
+    return kernel.get_status_json();
   });
-  gateway.set_playlist_provider([]() -> std::string {
-    return R"({"items":[],"current_index":-1})";
+  gateway.set_playlist_provider([&]() -> std::string {
+    return kernel.get_playlist_json();
   });
 
   gateway.register_routes(server);
 
   // 注册总线事件 → WebSocket 广播
-  bus.register_sink("*", [&](const sm::Envelope& e) {
-    // 引擎事件推给 WebSocket 客户端
+  kernel.bus().register_sink("*", [&](const sm::Envelope& e) {
     std::string evt = sm::envelope_to_json(e);
     gateway.on_engine_event(evt);
   });
@@ -105,43 +87,41 @@ int main(int argc, char** argv) {
   while (g_running.load()) {
     // 排空远程指令队列，投递到消息总线
     queue.drain([&](const sm::web::RemoteCommand& cmd) {
-      // 构造信封并投递总线
-      nlohmann::json params = nlohmann::json::parse(cmd.params_json, nullptr, false);
+      nlohmann::json params = nlohmann::json::parse(cmd.params_json,
+                                                     nullptr, false);
       if (params.is_null()) params = nlohmann::json::object();
 
       // 根据 op 命名空间决定 dst
-      std::string dst = "engine.media";  // 默认
+      std::string dst = "engine.media";
       const char* ns = sm::op_namespace(cmd.op);
       if (ns) {
         std::string n = ns;
         if (n == "media" || n == "transport") dst = "engine.media";
         else if (n == "timeline") dst = "engine.timeline";
-        else if (n == "scene" || n == "playlist") dst = "engine.timeline";
+        else if (n == "scene") dst = "engine.scene";
+        else if (n == "playlist") dst = "engine.playlist";
         else if (n == "sys") dst = "engine.ui";
       }
 
       sm::Envelope env = sm::make_cmd(cmd.src, dst, cmd.op, params);
-      bus.post(env);
+      kernel.bus().post(env);
     });
 
-    // 心跳 tick（每 2 秒检查一次）
+    // 心跳 tick（每 2 秒）
     auto now = std::time(nullptr);
     if (now - last_tick >= 2) {
-      hb.tick(now * 1000);
-      // 空壳引擎保持心跳（真实引擎由各自线程上报）
+      kernel.heartbeat().tick(now * 1000);
       for (const auto& desc : sm::engine_registry())
-        hb.note_heartbeat(desc.id, now * 1000);
+        kernel.heartbeat().note_heartbeat(desc.id, now * 1000);
       last_tick = now;
     }
 
-    // 避免空转
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
   // ---- 清理 ----
   std::printf("\n[shutdown] 停止引擎...\n");
-  for (auto& eng : engines)
-    eng->stop();
+  kernel.stop();
   server.stop();
   sm::web::net_shutdown();
   std::printf("[shutdown] 完成\n");

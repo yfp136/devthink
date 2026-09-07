@@ -37,3 +37,6 @@ sm_add_unit_test(test_playlist sm_engines)
 
 # M1 素材库导入管线（§10.1 导入/分类/查询/回收站/引用保护/标签）
 sm_add_unit_test(test_media_lib sm_engines)
+
+# Kernel 集成测试（M1-M5 引擎互连 + 总线路由 + 回调链）
+sm_add_unit_test(test_kernel sm_engines sm_core)

@@ -38,6 +38,7 @@ class TimelineEngine {
   void set_media_stop_cb(MediaStopFn cb) { scheduler_->set_media_stop_cb(std::move(cb)); }
   void set_scene_recall_cb(SceneRecallFn cb) { scheduler_->set_scene_recall_cb(std::move(cb)); }
   void set_command_cb(CommandFn cb) { scheduler_->set_command_cb(std::move(cb)); }
+  void set_item_event_cb(ItemEventFn cb) { scheduler_->set_item_event_cb(std::move(cb)); }
 
  private:
   void handle_command(const Envelope& env);

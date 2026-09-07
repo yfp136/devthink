@@ -133,7 +133,7 @@ endif()
 # ============================================================================
 if(SM_BUILD_HEADLESS)
   add_executable(sm_headless "${SM_SRC_DIR}/app/main_headless.cpp")
-  target_link_libraries(sm_headless PRIVATE sm_web)
+  target_link_libraries(sm_headless PRIVATE sm_web sm_core sm_engines)
   if(WIN32)
     target_link_libraries(sm_headless PRIVATE ws2_32)
   endif()
