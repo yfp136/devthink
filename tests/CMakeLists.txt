@@ -22,3 +22,6 @@ sm_add_unit_test(test_engine_stub sm_engines)
 
 # Web 远控层（SHA-1/Base64/Auth/RemoteQueue）
 sm_add_unit_test(test_web sm_web)
+
+# M5 时间线调度器（§7 六轨调度 + §10.6 条目状态机）
+sm_add_unit_test(test_timeline sm_engines)
