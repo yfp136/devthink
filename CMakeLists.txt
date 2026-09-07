@@ -24,6 +24,7 @@ endif()
 
 option(SM_BUILD_TESTS "构建单元测试（DoD 前提：ctest 全绿）" ON)
 option(SM_BUILD_APP  "构建内核冒烟程序 sm_kernel_smoke" ON)
+option(SM_BUILD_HEADLESS "构建 headless 服务器 sm_headless（Web 远控）" ON)
 
 # ---- 目录定义 -------------------------------------------------------------
 set(SM_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -110,6 +111,30 @@ endif()
 if(SM_BUILD_APP)
   add_executable(sm_kernel_smoke "${SM_SRC_DIR}/app/main.cpp")
   target_link_libraries(sm_kernel_smoke PRIVATE sm_engines)
+endif()
+
+# ============================================================================
+# sm_web：Web 远控层（HTTP/WebSocket Server + Auth + RemoteQueue + Gateway）
+# ============================================================================
+file(GLOB SM_WEB_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/web/*.cpp")
+add_library(sm_web STATIC ${SM_WEB_SOURCES})
+target_link_libraries(sm_web PUBLIC sm_core sm_engines)
+target_include_directories(sm_web PUBLIC "${SM_SRC_DIR}" "${SM_THIRD_PARTY_DIR}")
+
+# 平台 socket 库：Windows 需 ws2_32；macOS/Linux 无需额外库
+if(WIN32)
+  target_link_libraries(sm_web PUBLIC ws2_32)
+endif()
+
+# ============================================================================
+# sm_headless：Headless 服务器模式（工控机常驻，Web 远控入口）
+# ============================================================================
+if(SM_BUILD_HEADLESS)
+  add_executable(sm_headless "${SM_SRC_DIR}/app/main_headless.cpp")
+  target_link_libraries(sm_headless PRIVATE sm_web)
+  if(WIN32)
+    target_link_libraries(sm_headless PRIVATE ws2_32)
+  endif()
 endif()
 
 # ============================================================================

@@ -19,3 +19,6 @@ sm_add_unit_test(test_engine_registry sm_engines)
 
 # 引擎空壳（Windows 插件 DLL 同源模板；本机 ABI 冒烟）
 sm_add_unit_test(test_engine_stub sm_engines)
+
+# Web 远控层（SHA-1/Base64/Auth/RemoteQueue）
+sm_add_unit_test(test_web sm_web)
