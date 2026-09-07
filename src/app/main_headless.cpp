@@ -63,6 +63,38 @@ int main(int argc, char** argv) {
   gateway.set_playlist_provider([&]() -> std::string {
     return kernel.get_playlist_json();
   });
+  gateway.set_scene_list_provider([&]() -> std::string {
+    return kernel.scene().list().dump();
+  });
+
+  // 快捷操作回调（直接执行，低延迟，不入队）
+  gateway.set_scene_go_fn([&](const std::string& id, int fade) -> bool {
+    return kernel.scene_go(id, fade);
+  });
+  gateway.set_transport_play_fn([&](const std::string& media_id) -> bool {
+    return kernel.transport_play(media_id);
+  });
+  gateway.set_transport_stop_fn([&]() -> bool {
+    return kernel.transport_stop();
+  });
+  gateway.set_transport_pause_fn([&]() -> bool {
+    return kernel.transport_pause();
+  });
+  gateway.set_transport_resume_fn([&]() -> bool {
+    return kernel.transport_resume();
+  });
+  gateway.set_playlist_go_fn([&]() -> bool {
+    return kernel.playlist_go();
+  });
+  gateway.set_playlist_start_fn([&]() -> bool {
+    return kernel.playlist_start();
+  });
+  gateway.set_playlist_stop_fn([&]() -> bool {
+    return kernel.playlist_stop();
+  });
+  gateway.set_playlist_next_fn([&]() -> bool {
+    return kernel.playlist_next();
+  });
 
   gateway.register_routes(server);
 

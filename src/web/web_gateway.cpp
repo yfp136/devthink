@@ -189,7 +189,7 @@ void WebGateway::register_routes(HttpServer& server) {
     return json_ok(R"({"items":[]})");
   });
 
-  // ---- 场景切换快捷 ----
+  // ---- 场景切换快捷（直接执行，低延迟）----
   server.post("/api/scene/go", [this](const HttpRequest& req) {
     WebSession session;
     if (!check_auth(req, session))
@@ -201,10 +201,18 @@ void WebGateway::register_routes(HttpServer& server) {
     if (body.is_null() || !body.contains("scene_id"))
       return json_err(400, "missing scene_id");
 
+    std::string scene_id = body["scene_id"].get<std::string>();
+    int fade_ms = body.value("fade_ms", -1);
+
+    if (scene_go_fn_) {
+      bool ok = scene_go_fn_(scene_id, fade_ms);
+      return json_ok(json({{"ok", ok}, {"scene_id", scene_id}}).dump());
+    }
+    // 降级：入队
     std::string sid = sm::uuid_hex32();
     RemoteCommand cmd{
       sid, "scene.recall",
-      json{{"scene_id", body["scene_id"]}}.dump(),
+      json{{"scene_id", scene_id}, {"fade_ms", fade_ms}}.dump(),
       "remote.web:" + session.peer_ip,
       std::time(nullptr) * 1000
     };
@@ -212,7 +220,40 @@ void WebGateway::register_routes(HttpServer& server) {
     return json_ok(json({{"accepted", true}, {"id", sid}}).dump());
   });
 
-  // ---- 播放快捷 ----
+  // ---- 场景列表 ----
+  server.get("/api/scene/list", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (scene_list_provider_)
+      return json_ok(scene_list_provider_());
+    return json_ok(R"({"items":[],"total":0})");
+  });
+
+  // ---- 场景保存 ----
+  server.post("/api/scene/save", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+
+    json body = json::parse(req.body, nullptr, false);
+    if (body.is_null() || !body.contains("scene_name"))
+      return json_err(400, "missing scene_name");
+
+    std::string sid = sm::uuid_hex32();
+    RemoteCommand cmd{
+      sid, "scene.save",
+      body.dump(),
+      "remote.web:" + session.peer_ip,
+      std::time(nullptr) * 1000
+    };
+    queue_.push(std::move(cmd));
+    return json_ok(json({{"accepted", true}, {"id", sid}}).dump());
+  });
+
+  // ---- 播放快捷（直接执行）----
   server.post("/api/transport/play", [this](const HttpRequest& req) {
     WebSession session;
     if (!check_auth(req, session))
@@ -222,6 +263,12 @@ void WebGateway::register_routes(HttpServer& server) {
 
     json body = json::parse(req.body, nullptr, false);
     std::string media_id = body.value("media_id", "");
+
+    if (transport_play_fn_) {
+      bool ok = transport_play_fn_(media_id);
+      return json_ok(json({{"ok", ok}}).dump());
+    }
+    // 降级：入队
     std::string tid = sm::uuid_hex32();
     RemoteCommand cmd{
       tid, "transport.play",
@@ -233,7 +280,7 @@ void WebGateway::register_routes(HttpServer& server) {
     return json_ok(json({{"accepted", true}, {"id", tid}}).dump());
   });
 
-  // ---- 停止快捷 ----
+  // ---- 停止快捷（直接执行）----
   server.post("/api/transport/stop", [this](const HttpRequest& req) {
     WebSession session;
     if (!check_auth(req, session))
@@ -241,18 +288,46 @@ void WebGateway::register_routes(HttpServer& server) {
     if (!auth_.can_access(session.role, "POST"))
       return json_err(403, "forbidden");
 
+    if (transport_stop_fn_) {
+      transport_stop_fn_();
+      return json_ok(R"({"ok":true})");
+    }
     std::string sid2 = sm::uuid_hex32();
-    RemoteCommand cmd{
-      sid2, "transport.stop",
-      "{}",
-      "remote.web:" + session.peer_ip,
-      std::time(nullptr) * 1000
-    };
+    RemoteCommand cmd{sid2, "transport.stop", "{}",
+                      "remote.web:" + session.peer_ip,
+                      std::time(nullptr) * 1000};
     queue_.push(std::move(cmd));
     return json_ok(json({{"accepted", true}, {"id", sid2}}).dump());
   });
 
-  // ---- GO 触发（节目单下一项）----
+  // ---- 暂停/恢复 ----
+  server.post("/api/transport/pause", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+    if (transport_pause_fn_) {
+      transport_pause_fn_();
+      return json_ok(R"({"ok":true})");
+    }
+    return json_err(501, "not implemented");
+  });
+
+  server.post("/api/transport/resume", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+    if (transport_resume_fn_) {
+      transport_resume_fn_();
+      return json_ok(R"({"ok":true})");
+    }
+    return json_err(501, "not implemented");
+  });
+
+  // ---- GO 触发（节目单下一项，直接执行）----
   server.post("/api/go", [this](const HttpRequest& req) {
     WebSession session;
     if (!check_auth(req, session))
@@ -260,15 +335,164 @@ void WebGateway::register_routes(HttpServer& server) {
     if (!auth_.can_access(session.role, "POST"))
       return json_err(403, "forbidden");
 
+    if (playlist_go_fn_) {
+      playlist_go_fn_();
+      return json_ok(R"({"ok":true})");
+    }
     std::string gid = sm::uuid_hex32();
-    RemoteCommand cmd{
-      gid, "playlist.go_next",
-      "{}",
-      "remote.web:" + session.peer_ip,
-      std::time(nullptr) * 1000
-    };
+    RemoteCommand cmd{gid, "playlist.go", "{}",
+                      "remote.web:" + session.peer_ip,
+                      std::time(nullptr) * 1000};
     queue_.push(std::move(cmd));
     return json_ok(json({{"accepted", true}, {"id", gid}}).dump());
+  });
+
+  // ---- 节目单控制 ----
+  server.post("/api/playlist/start", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+    if (playlist_start_fn_) {
+      playlist_start_fn_();
+      return json_ok(R"({"ok":true})");
+    }
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "playlist.start", "{}",
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  server.post("/api/playlist/stop", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+    if (playlist_stop_fn_) {
+      playlist_stop_fn_();
+      return json_ok(R"({"ok":true})");
+    }
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "playlist.stop", "{}",
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  server.post("/api/playlist/next", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+    if (playlist_next_fn_) {
+      playlist_next_fn_();
+      return json_ok(R"({"ok":true})");
+    }
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "playlist.next", "{}",
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  server.post("/api/playlist/load", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+
+    json body = json::parse(req.body, nullptr, false);
+    if (body.is_null() || !body.contains("items"))
+      return json_err(400, "missing items");
+
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "playlist.load", body.dump(),
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  // ---- 时间线条目编辑 ----
+  server.post("/api/timeline/item", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+
+    json body = json::parse(req.body, nullptr, false);
+    if (body.is_null())
+      return json_err(400, "invalid json");
+
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "timeline.item_insert", body.dump(),
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  server.get("/api/timeline/tracks", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    std::string id = sm::uuid_hex32();
+    // 直接入队查询
+    queue_.push({id, "timeline.tracks", "{}",
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  // ---- 素材库 ----
+  server.post("/api/media/import", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+    if (!auth_.can_access(session.role, "POST"))
+      return json_err(403, "forbidden");
+
+    json body = json::parse(req.body, nullptr, false);
+    if (body.is_null() || !body.contains("paths"))
+      return json_err(400, "missing paths");
+
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "media.import", body.dump(),
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
+  });
+
+  server.get("/api/media/query", [this](const HttpRequest& req) {
+    WebSession session;
+    if (!check_auth(req, session))
+      return json_err(401, "unauthorized");
+
+    // 把 query 参数转为 filter JSON
+    json filters = json::object();
+    auto parse_q = [&](const std::string& key) {
+      auto pos = req.query.find(key + "=");
+      if (pos == 0) {
+        std::string val = req.query.substr(key.length() + 1);
+        auto amp = val.find('&');
+        if (amp != std::string::npos) val = val.substr(0, amp);
+        filters[key] = val;
+      }
+    };
+    parse_q("media_type");
+    parse_q("name");
+    parse_q("page");
+    parse_q("page_size");
+
+    std::string id = sm::uuid_hex32();
+    queue_.push({id, "media.query", filters.dump(),
+                 "remote.web:" + session.peer_ip,
+                 std::time(nullptr) * 1000});
+    return json_ok(json({{"accepted", true}, {"id", id}}).dump());
   });
 
   // ---- 改密码 ----

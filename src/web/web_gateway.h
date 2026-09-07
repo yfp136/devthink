@@ -57,6 +57,40 @@ class WebGateway {
     playlist_provider_ = std::move(cb);
   }
 
+  // 设置场景列表查询回调
+  void set_scene_list_provider(std::function<std::string()> cb) {
+    scene_list_provider_ = std::move(cb);
+  }
+
+  // 设置快捷操作回调（直接执行，不入队，用于低延迟操作）
+  void set_scene_go_fn(std::function<bool(const std::string&, int)> cb) {
+    scene_go_fn_ = std::move(cb);
+  }
+  void set_transport_play_fn(std::function<bool(const std::string&)> cb) {
+    transport_play_fn_ = std::move(cb);
+  }
+  void set_transport_stop_fn(std::function<bool()> cb) {
+    transport_stop_fn_ = std::move(cb);
+  }
+  void set_transport_pause_fn(std::function<bool()> cb) {
+    transport_pause_fn_ = std::move(cb);
+  }
+  void set_transport_resume_fn(std::function<bool()> cb) {
+    transport_resume_fn_ = std::move(cb);
+  }
+  void set_playlist_go_fn(std::function<bool()> cb) {
+    playlist_go_fn_ = std::move(cb);
+  }
+  void set_playlist_start_fn(std::function<bool()> cb) {
+    playlist_start_fn_ = std::move(cb);
+  }
+  void set_playlist_stop_fn(std::function<bool()> cb) {
+    playlist_stop_fn_ = std::move(cb);
+  }
+  void set_playlist_next_fn(std::function<bool()> cb) {
+    playlist_next_fn_ = std::move(cb);
+  }
+
  private:
   Auth& auth_;
   RemoteQueue& queue_;
@@ -64,6 +98,16 @@ class WebGateway {
   HttpServer* server_ = nullptr;
   std::function<std::string()> status_provider_;
   std::function<std::string()> playlist_provider_;
+  std::function<std::string()> scene_list_provider_;
+  std::function<bool(const std::string&, int)> scene_go_fn_;
+  std::function<bool(const std::string&)> transport_play_fn_;
+  std::function<bool()> transport_stop_fn_;
+  std::function<bool()> transport_pause_fn_;
+  std::function<bool()> transport_resume_fn_;
+  std::function<bool()> playlist_go_fn_;
+  std::function<bool()> playlist_start_fn_;
+  std::function<bool()> playlist_stop_fn_;
+  std::function<bool()> playlist_next_fn_;
 
   // 鉴权辅助：从请求中取 token 并校验
   bool check_auth(const HttpRequest& req, WebSession& session);

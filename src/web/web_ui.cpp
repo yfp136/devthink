@@ -1,6 +1,12 @@
 // 内嵌 Web 前端（单页应用，零依赖纯 HTML/JS/CSS）
 // 由 WebGateway 在 GET / 时直接返回此 HTML。
-// 功能：登录页 → 管控仪表盘（引擎状态/GO触发/场景切换/播放控制/PGM预览/事件日志）
+// 功能：登录 → 管控仪表盘
+//   - 引擎状态 + 队列统计
+//   - 演出控制（GO/播放/停止/暂停/恢复）
+//   - 场景列表 + 一键切换
+//   - 节目单状态 + 控制
+//   - PGM 预览
+//   - 事件日志
 // 适配手机/平板/电脑浏览器，自适应布局。
 
 namespace sm {
@@ -24,7 +30,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .login-box button:hover{opacity:.9;transform:translateY(-1px)}
 .login-box .err{color:#ff6b6b;font-size:12px;text-align:center;margin-top:8px;display:none}
 .dashboard{display:none}
-.topbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.08)}
+.topbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.08);position:sticky;top:0;z-index:10}
 .topbar .title{font-size:16px;font-weight:600;color:#6c8aff}
 .topbar .user{font-size:12px;color:#888}
 .topbar .btn-logout{padding:6px 14px;background:rgba(255,107,107,0.15);border:1px solid rgba(255,107,107,0.3);border-radius:6px;color:#ff6b6b;font-size:12px;cursor:pointer;margin-left:10px}
@@ -37,6 +43,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .btn-go:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,200,150,0.3)}
 .btn-play{background:#6c8aff;color:#fff}
 .btn-stop{background:#ff6b6b;color:#fff}
+.btn-pause{background:#ffa500;color:#fff}
+.btn-secondary{background:rgba(255,255,255,0.08);color:#e0e0e8;border:1px solid rgba(255,255,255,0.12)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .engine-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
 .engine-row:last-child{border:none}
@@ -52,8 +60,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .queue-stats .num{font-size:18px;font-weight:bold;color:#6c8aff}
 .queue-stats .lbl{font-size:10px;color:#666}
 .scene-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-.scene-btn{padding:8px;background:rgba(108,138,255,0.1);border:1px solid rgba(108,138,255,0.3);border-radius:6px;color:#e0e0e8;cursor:pointer;font-size:12px;text-align:center}
+.scene-btn{padding:8px;background:rgba(108,138,255,0.1);border:1px solid rgba(108,138,255,0.3);border-radius:6px;color:#e0e0e8;cursor:pointer;font-size:12px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .scene-btn:hover{background:rgba(108,138,255,0.2)}
+.pl-info{font-size:12px;color:#aaa;margin-top:6px}
+.pl-info span{color:#6c8aff;font-weight:bold}
+.status-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold}
+.status-badge.playing{background:rgba(0,200,150,0.2);color:#00c896}
+.status-badge.stopped{background:rgba(255,107,107,0.2);color:#ff6b6b}
+.status-badge.paused{background:rgba(255,165,0,0.2);color:#ffa500}
+.status-badge.ended{background:rgba(255,255,255,0.1);color:#888}
+.btn-row{display:flex;gap:8px;margin-top:8px}
 </style>
 </head><body>
 <div id="loginPage" class="login">
@@ -83,21 +99,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 </div>
 <div class="card"><h2>演出控制</h2>
 <button class="btn btn-go" onclick="sendGo()">GO ▶ 下一节目</button>
-<div style="display:flex;gap:8px;margin-top:8px">
+<div class="btn-row">
 <button class="btn btn-play" onclick="sendPlay()" style="flex:1">播放</button>
+<button class="btn btn-pause" onclick="sendPause()" style="flex:1">暂停</button>
 <button class="btn btn-stop" onclick="sendStop()" style="flex:1">停止</button>
 </div>
-<div class="queue-stats" style="margin-top:8px"><div><div class="num" id="sessionCount">0</div><div class="lbl">在线会话</div></div></div>
+<div class="pl-info" id="runtimeInfo">播放: <span id="rtState">--</span> | 位置: <span id="rtPos">0</span>ms | 媒体: <span id="rtMedia">--</span></div>
+<div class="queue-stats" style="margin-top:8px"><div><div class="num" id="sessionCount">0</div><div class="lbl">在线会话</div></div>
+<div><div class="num" id="sceneCount">0</div><div class="lbl">场景数</div></div>
+<div><div class="num" id="mediaCount">0</div><div class="lbl">素材数</div></div></div>
 </div>
 <div class="card"><h2>PGM 预览</h2><img id="pgmPreview" class="preview" src="" alt="等待画面..."></div>
+<div class="card"><h2>场景列表</h2><div class="scene-grid" id="sceneGrid"><div style="color:#666;font-size:12px;grid-column:1/3">暂无场景</div></div></div>
+<div class="card"><h2>节目单</h2>
+<div class="pl-info">状态: <span id="plState">idle</span> | 当前: <span id="plIndex">-</span> / <span id="plTotal">0</span></div>
+<div class="btn-row">
+<button class="btn btn-play" onclick="plStart()" style="flex:1">开始</button>
+<button class="btn btn-secondary" onclick="plNext()" style="flex:1">下一项</button>
+<button class="btn btn-stop" onclick="plStop()" style="flex:1">停止</button>
+</div>
+</div>
 <div class="card"><h2>事件日志</h2><div class="event-log" id="eventLog"></div></div>
 </div>
 </div>
 
 <script>
-let token='';
-let role='';
+let token='',role='';
 let wsEvents=null,wsPreview=null;
+const AUTH={'Authorization':'Bearer '};
+
 async function doLogin(){
 const u=document.getElementById('username').value,p=document.getElementById('password').value;
 try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
@@ -111,19 +141,34 @@ function showDashboard(user,role){
 document.getElementById('loginPage').style.display='none';
 document.getElementById('dashboard').style.display='block';
 document.getElementById('userInfo').textContent=user+' ('+role+')';
-connectWS();refreshStatus()}
-async function sendCmd(op,params={}){
-await fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({op,params})})}
-function sendGo(){fetch('/api/go',{method:'POST',headers:{'Authorization':'Bearer '+token}})}
-function sendPlay(){fetch('/api/transport/play',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({media_id:''})})}
-function sendStop(){fetch('/api/transport/stop',{method:'POST',headers:{'Authorization':'Bearer '+token}})}
+connectWS();refreshStatus();refreshScenes()}
+
+function authHeader(){return{...AUTH,'Authorization':'Bearer '+token,'Content-Type':'application/json'}}
+
+async function sendCmd(op,params={}){await fetch('/api/cmd',{method:'POST',headers:authHeader(),body:JSON.stringify({op,params})})}
+function sendGo(){fetch('/api/go',{method:'POST',headers:authHeader()}).then(()=>logEvent('GO','触发'))}
+function sendPlay(){fetch('/api/transport/play',{method:'POST',headers:authHeader(),body:JSON.stringify({media_id:''})}).then(()=>logEvent('Transport','play'))}
+function sendStop(){fetch('/api/transport/stop',{method:'POST',headers:authHeader()}).then(()=>logEvent('Transport','stop'))}
+function sendPause(){fetch('/api/transport/pause',{method:'POST',headers:authHeader()}).then(()=>logEvent('Transport','pause'))}
+function plStart(){fetch('/api/playlist/start',{method:'POST',headers:authHeader()}).then(()=>logEvent('Playlist','start'))}
+function plStop(){fetch('/api/playlist/stop',{method:'POST',headers:authHeader()}).then(()=>logEvent('Playlist','stop'))}
+function plNext(){fetch('/api/playlist/next',{method:'POST',headers:authHeader()}).then(()=>logEvent('Playlist','next'))}
+function sceneGo(id,fade){fetch('/api/scene/go',{method:'POST',headers:authHeader(),body:JSON.stringify({scene_id:id,fade_ms:fade||-1})}).then(()=>logEvent('Scene','recall '+id))}
+
 function connectWS(){
 const proto=location.protocol==='https:'?'wss:':'ws:';
 wsEvents=new WebSocket(proto+'//'+location.host+'/ws/events');
-wsEvents.onmessage=e=>{const d=JSON.parse(e.data);logEvent(d.op||'evt',JSON.stringify(d.params||{}))};
+wsEvents.onmessage=e=>{try{const d=JSON.parse(e.data);logEvent(d.op||'evt',JSON.stringify(d.params||{}))}catch(err){}};
 wsPreview=new WebSocket(proto+'//'+location.host+'/ws/preview');
-wsPreview.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='pgm_frame')document.getElementById('pgmPreview').src=d.data}}
+wsPreview.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.type==='pgm_frame')document.getElementById('pgmPreview').src=d.data}catch(err){}}
+
+wsEvents.onclose=()=>setTimeout(connectWS,3000)
+}
+
 function logEvent(op,detail){const el=document.getElementById('eventLog');const t=new Date().toLocaleTimeString();const entry=document.createElement('div');entry.className='entry';entry.textContent='['+t+'] '+op+' '+detail;el.insertBefore(entry,el.firstChild);if(el.children.length>100)el.removeChild(el.lastChild)}
+
+function stateBadge(s){const cls={playing:'playing',stopped:'stopped',paused:'paused',ended:'ended',idle:'ended',running:'playing',waiting_go:'paused'}[s]||'ended';return'<span class="status-badge '+cls+'">'+s+'</span>'}
+
 async function refreshStatus(){
 if(!token)return;
 try{const r=await fetch('/api/status?token='+token);if(!r.ok){if(r.status===401){doLogout();return}return}
@@ -134,7 +179,27 @@ document.getElementById('qPending').textContent=d.queue?d.queue.pending:0;
 document.getElementById('qPushed').textContent=d.queue?d.queue.total_pushed:0;
 document.getElementById('qDropped').textContent=d.queue?d.queue.total_dropped:0;
 document.getElementById('sessionCount').textContent=d.sessions||0;
-}catch(e){}setTimeout(refreshStatus,3000)}
+if(d.runtime){
+const rt=d.runtime;
+document.getElementById('rtState').innerHTML=stateBadge(rt.play_state||'stopped');
+document.getElementById('rtPos').textContent=(rt.pos_ms||0).toLocaleString();
+document.getElementById('rtMedia').textContent=rt.media_state||'idle';
+document.getElementById('sceneCount').textContent=rt.scene_count||0;
+document.getElementById('mediaCount').textContent=rt.media_count||0;
+if(rt.playlist_state){document.getElementById('plState').innerHTML=stateBadge(rt.playlist_state);document.getElementById('plIndex').textContent=rt.playlist_index??'-';}
+}
+}catch(e){}setTimeout(refreshStatus,2000)}
+
+async function refreshScenes(){
+if(!token)return;
+try{const r=await fetch('/api/scene/list?token='+token);if(!r.ok)return;
+const d=await r.json();
+const grid=document.getElementById('sceneGrid');
+if(!d.items||d.items.length===0){grid.innerHTML='<div style="color:#666;font-size:12px;grid-column:1/3">暂无场景</div>';return}
+grid.innerHTML='';
+d.items.forEach(s=>{const btn=document.createElement('div');btn.className='scene-btn';btn.textContent=s.scene_name||s.scene_id;btn.title=s.scene_name;btn.onclick=()=>sceneGo(s.scene_id,s.fade_ms);grid.appendChild(btn)})
+}catch(e){}setTimeout(refreshScenes,5000)}
+
 // 自动登录
 const saved=localStorage.getItem('sm_token');if(saved){token=saved;role=localStorage.getItem('sm_role')||'';fetch('/api/status?token='+token).then(r=>{if(r.ok){showDashboard(role,role)}else{localStorage.removeItem('sm_token')}}).catch(()=>{})}
 </script>
