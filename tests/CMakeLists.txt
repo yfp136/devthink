@@ -28,3 +28,6 @@ sm_add_unit_test(test_timeline sm_engines)
 
 # M2 媒体引擎（§10.2 状态机 + 增益/淡变包络 + 单源互斥）
 sm_add_unit_test(test_media sm_engines)
+
+# M3 场景快照（§10.3 保存/召回/淡变/引用保护/列表）
+sm_add_unit_test(test_scene sm_engines)
