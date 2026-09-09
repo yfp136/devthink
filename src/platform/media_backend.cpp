@@ -377,7 +377,7 @@ static void render_loop() {
     if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)))
       break;
     if (FAILED(device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr,
-                                IID_PPV_ARGS(&client))))
+                                reinterpret_cast<void**>(&client))))
       break;
 
     // 首选 16bit/48k/stereo PCM；共享模式若拒绝，回退到等价的混音格式
