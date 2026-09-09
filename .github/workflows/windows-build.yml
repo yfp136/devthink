@@ -14,25 +14,27 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 45
-    env:
-      # vcpkg 二进制缓存目录：命中后 sqlite3/ffmpeg 无需再从源码编译。
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # vcpkg 二进制缓存：避免每次 push 都重新从源码编译（sqlite3 快，ffmpeg 较慢）。
-      # key 随 workflow 文件哈希失效；vcpkg abi-hash 不匹配的旧包会自动跳过（保守安全）。
+      # vcpkg 二进制缓存：key 用固定前缀+手动版本号（v1），不用 workflow 文件哈希，
+      # 否则 workflow 每次微调都会让已编译好的 Qt 缓存整体失效、被迫全量重编。
+      # vcpkg 自身 abi-hash 会保证不匹配的旧包自动跳过（保守安全）。
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-cache-${{ runner.os }}-${{ hashFiles('.github/workflows/windows-build.yml') }}
+          key: vcpkg-cache-${{ runner.os }}-v1
           restore-keys: |
             vcpkg-cache-${{ runner.os }}-
 
       - name: Install dependencies (vcpkg sqlite3 + ffmpeg)
         shell: pwsh
+        env:
+          # vcpkg 二进制缓存目录：命中后 sqlite3/ffmpeg 无需再从源码编译。
+          # 必须在 step 级 env 设置：runner context 在 job 级 env 不可用。
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sqlite3:x64-windows
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install ffmpeg:x64-windows
@@ -109,29 +111,31 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      # vcpkg 二进制缓存目录：Qt6 (qtbase/qtdeclarative/qtquickcontrols2) 从源码编译
-      # 需 ~1.5h，缓存命中后降到数分钟；失败的 run 也能把已完成的包归档回传，
-      # 重试直接从断点续编。
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
       # 桌面 job 只用 Release 产物（windows-msvc-release preset），故让 vcpkg 只编 release，
       # 磁盘占用与编译时间直接减半——否则 dbg+rel 双配置会把 GitHub runner 磁盘耗尽
       # （曾于 qtdeclarative-dbg 阶段报 no space on device）。
+      # 注意：VCPKG_DEFAULT_BINARY_CACHE 未放这里——runner context 在 job 级 env 不可用，
+      # 只能在 step 级 env/with 里用 ${{ runner.temp }}（否则整个 workflow 解析报错、0 job）。
       VCPKG_BUILD_TYPE: release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # vcpkg 二进制缓存：key 随 workflow 文件哈希失效；Qt 三件套是主要受益者。
+      # vcpkg 二进制缓存：key 固定前缀+手动版本号（v1）；Qt 三件套是主要受益者。
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-cache-desktop-${{ runner.os }}-${{ hashFiles('.github/workflows/windows-build.yml') }}
+          key: vcpkg-cache-desktop-${{ runner.os }}-v1
           restore-keys: |
             vcpkg-cache-desktop-${{ runner.os }}-
 
       - name: Install Qt6 + sqlite3 (vcpkg, x64-windows)
         shell: pwsh
+        env:
+          # vcpkg 二进制缓存目录：Qt6 (qtbase/qtdeclarative/qtquickcontrols2) 从源码编译
+          # 需 ~1.5h，缓存命中后降到数分钟；在 step 级设置（job 级 env 拿不到 runner context）。
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
         run: |
           # sm_core 在 Windows 依赖 sqlite3（find_package(SQLite3)）；
           # Qt 组件见 docs/BUILD_WINDOWS.md §7.1 方式 B：
