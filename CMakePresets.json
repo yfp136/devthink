@@ -35,7 +35,6 @@
       "description": "在“x64 Native Tools Command Prompt for VS 2022”中执行；vcpkg 依赖时追加 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\\scripts\\buildsystems\\vcpkg.cmake，详见 docs/BUILD_WINDOWS.md",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "architecture": "x64",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SM_BUILD_TESTS": "ON",
@@ -48,7 +47,6 @@
       "displayName": "Windows Release（MSVC 2022）",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "architecture": "x64",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "SM_BUILD_TESTS": "ON",
