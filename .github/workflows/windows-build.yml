@@ -36,6 +36,8 @@ jobs:
           # 必须在 step 级 env 设置：runner context 在 job 级 env 不可用。
           VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
         run: |
+          # cache miss 时该目录尚不存在，而 vcpkg 要求它必须是已存在目录。
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sqlite3:x64-windows
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install ffmpeg:x64-windows
 
@@ -137,6 +139,8 @@ jobs:
           # 需 ~1.5h，缓存命中后降到数分钟；在 step 级设置（job 级 env 拿不到 runner context）。
           VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
         run: |
+          # cache miss 时该目录尚不存在，而 vcpkg 要求它必须是已存在目录。
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           # sm_core 在 Windows 依赖 sqlite3（find_package(SQLite3)）；
           # Qt 组件见 docs/BUILD_WINDOWS.md §7.1 方式 B：
           #   qtbase（Core/Gui）qtdeclarative（Qml/Quick）qtquickcontrols2（QuickControls2）
