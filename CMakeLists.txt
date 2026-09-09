@@ -101,9 +101,11 @@ if(WIN32)
     # PUBLIC：sm_engines 为静态库，FFmpeg 库/头文件须传递到最终
     # 可执行（sm_headless）与插件 DLL 的链接行与编译环境；
     # SM_HAS_FFMPEG 仅对库内 TU（media_backend.cpp）有意义 → PRIVATE。
-    # ole32：COM/WASAPI（CoInitializeEx/CoCreateInstance/CLSID_*）。
-    # uuid：initguid.h 实体化的 WASAPI/COM GUID 符号
-    # （CLSID_MMDeviceEnumerator / IID_IAudioClient 等定义于 uuid.lib）。
+    # ole32：COM/WASAPI（CoInitializeEx/CoCreateInstance）。
+    # uuid：通用 COM GUID（IID_IUnknown 等）。注意：WASAPI 的
+    # CLSID_MMDeviceEnumerator/IID_IAudioClient 不在 uuid.lib，也不响应
+    # INITGUID——media_backend.cpp 统一用 __uuidof() 编译期求值，勿改回
+    # 符号引用，否则链接报 LNK2001。
     target_link_libraries(sm_engines PUBLIC
       ${FFMPEG_LIBRARIES} ole32 uuid)
     target_include_directories(sm_engines PUBLIC ${FFMPEG_INCLUDE_DIRS})

@@ -16,7 +16,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <initguid.h>  // 实体化 WASAPI/COM GUID（CLSID_MMDeviceEnumerator 等）
 #include <audioclient.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
@@ -371,12 +370,12 @@ static void render_loop() {
     pcm16.nBlockAlign = static_cast<WORD>(kCh * (kBits / 8));
     pcm16.nAvgBytesPerSec = kRate * pcm16.nBlockAlign;
 
-    if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_ALL,
-                                IID_PPV_ARGS(&enumerator))))
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
+                                CLSCTX_ALL, IID_PPV_ARGS(&enumerator))))
       break;
     if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)))
       break;
-    if (FAILED(device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr,
+    if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                                 reinterpret_cast<void**>(&client))))
       break;
 
@@ -939,7 +938,7 @@ bool init_audio_output() {
   bool ok = false;
   IMMDeviceEnumerator* enumerator = nullptr;
   IMMDevice* device = nullptr;
-  hr = CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_ALL,
+  hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                         IID_PPV_ARGS(&enumerator));
   if (SUCCEEDED(hr) && enumerator)
     hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
