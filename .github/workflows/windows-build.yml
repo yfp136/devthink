@@ -111,7 +111,10 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop:
     runs-on: windows-latest
-    timeout-minutes: 120
+    # 首次（缓存未命中）需从源码编译 qtbase+qtdeclarative+qtquickcontrols2：
+    # windows-latest 2 vCPU 实测可达 ~130 分钟，120 不够，放宽到 180；
+    # 缓存命中后整个 job 只需 ~15 分钟。
+    timeout-minutes: 180
     env:
       # 桌面 job 只用 Release 产物（windows-msvc-release preset），故让 vcpkg 只编 release，
       # 磁盘占用与编译时间直接减半——否则 dbg+rel 双配置会把 GitHub runner 磁盘耗尽
