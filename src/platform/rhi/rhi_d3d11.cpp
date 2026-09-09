@@ -240,7 +240,7 @@ class D3D11Device final : public IDevice {
  public:
   D3D11Device(const ComPtr<ID3D11Device>& device,
               const ComPtr<ID3D11DeviceContext>& ctx,
-              const ComPtr<BuiltinShaders>& shaders)
+              const std::shared_ptr<BuiltinShaders>& shaders)
       : device_(device), ctx_(ctx), shaders_(shaders) {}
 
   const char* backend_name() const override { return "d3d11"; }
@@ -370,8 +370,8 @@ class D3D11PgmMixer final : public IPgmMixer {
         continue;
       }
       auto* v = static_cast<Vertex*>(mapped.pData);
-      const float x0 = rect_.x0, x1 = rect_.x1;
-      const float y0 = rect_.y0, y1 = rect_.y1;
+      const float x0 = rect_[0], x1 = rect_[1];
+      const float y0 = rect_[2], y1 = rect_[3];
       v[0] = {{x0, y0, 0.f, 1.f}, {0.f, 0.f}};
       v[1] = {{x1, y0, 0.f, 1.f}, {1.f, 0.f}};
       v[2] = {{x0, y1, 0.f, 1.f}, {0.f, 1.f}};
