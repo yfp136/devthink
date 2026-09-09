@@ -1,6 +1,8 @@
-# ShowMaster Windows CI（规格 4.2 DoD：Windows 上 ctest 全绿 + 引擎 DLL + Headless 构建）
+# ShowMaster Windows CI（规格 4.2 DoD：Windows 上 ctest 全绿 + 引擎 DLL + Headless 构建；
+# build job 之外，desktop job 覆盖 P1-1 sm_desktop：vcpkg Qt 6.7 → SM_BUILD_DESKTOP=ON
+# → Release 构建 → windeployqt → --smoke 启动自检（出口项 E2/E3 的 CI 断言））
 # 触发：push / PR。运行器 windows-latest 自带 VS2022 + vcpkg + Ninja。
-# 本地等价流程见 docs/BUILD_WINDOWS.md §3/§5。
+# 本地等价流程见 docs/BUILD_WINDOWS.md §3/§5/§7。
 name: windows-build
 
 on:
@@ -80,4 +82,86 @@ jobs:
             build/windows-msvc-debug/bin/*.dll
             build/windows-msvc-debug/sm_kernel_smoke.exe
             build/windows-msvc-debug/sm_headless.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # desktop job（路径 A：P1-1 sm_desktop 的 CI 冒烟覆盖）
+  # 覆盖出口项 E2/E3：vcpkg Qt 6.7 → SM_BUILD_DESKTOP=ON → Release 构建
+  # → windeployqt 部署 → sm_desktop --smoke 启动自检（退出码 0 = 通过）。
+  # 与上方 build job 相互独立：不共享 vcpkg 安装树，各自全新 runner。
+  # 首次运行 vcpkg 需从源码编译 Qt6（qtbase+qtdeclarative），耗时较长，
+  # 故 timeout 放宽到 120 分钟；命令形态与 docs/BUILD_WINDOWS.md §7 完全一致。
+  # ---------------------------------------------------------------------------
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt6 + sqlite3 (vcpkg, x64-windows)
+        shell: pwsh
+        run: |
+          # sm_core 在 Windows 依赖 sqlite3（find_package(SQLite3)）；
+          # Qt 组件见 docs/BUILD_WINDOWS.md §7.1 方式 B：
+          #   qtbase（Core/Gui）qtdeclarative（Qml/Quick）qtquickcontrols2（QuickControls2）
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
+            sqlite3:x64-windows qtbase:x64-windows `
+            qtdeclarative:x64-windows qtquickcontrols2:x64-windows
+
+      - name: Enable MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure (windows-msvc-release preset, SM_BUILD_DESKTOP=ON)
+        shell: pwsh
+        run: |
+          cmake --preset windows-msvc-release `
+            -DSM_BUILD_DESKTOP=ON `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build sm_desktop
+        shell: pwsh
+        run: cmake --build --preset windows-msvc-release --target sm_desktop
+
+      - name: Deploy Qt runtime (windeployqt --qmldir)
+        shell: pwsh
+        run: |
+          # vcpkg 安装 Qt6 后 windeployqt 位于 installed\x64-windows\tools\Qt6\bin；
+          # 若布局有变则全树兜底搜索一次，找不到即失败（依赖缺失须显式暴露）。
+          $candidate = Join-Path `
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\tools\Qt6\bin" `
+            "windeployqt.exe"
+          $deploy = if (Test-Path $candidate) { $candidate } else {
+            Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" `
+              -Recurse -Filter windeployqt.exe |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $deploy) { throw "windeployqt.exe not found under vcpkg installed tree" }
+          Write-Host "windeployqt: $deploy"
+          & $deploy "--qmldir" "src\app\qt\qml" "build\windows-msvc-release\sm_desktop.exe"
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE" }
+
+      - name: Smoke test sm_desktop (--smoke, expect exit code 0)
+        shell: pwsh
+        run: |
+          # --smoke 语义见 src/app/main_qt.cpp：QML 主窗口装配失败返回 1；
+          # 成功则进入事件循环 2.5s（让 Component.onCompleted 与首轮
+          # kernelReady/statusChanged 真实执行）后以 0 退出；期间崩溃则非 0。
+          $exe = "build\windows-msvc-release\sm_desktop.exe"
+          if (-not (Test-Path $exe)) { throw "sm_desktop.exe not found: $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList "--smoke" -PassThru -Wait
+          if ($p.ExitCode -ne 0) {
+            throw "sm_desktop --smoke failed: exit code $($p.ExitCode)（非 0 = QML 装配失败或事件循环期崩溃）"
+          }
+          Write-Host "Desktop smoke test passed: sm_desktop --smoke exited 0"
+
+      - name: Upload desktop artifact (sm_desktop + deployed Qt DLLs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: showmaster-win-desktop-qt
+          path: |
+            build/windows-msvc-release/sm_desktop.exe
+            build/windows-msvc-release/*.dll
           if-no-files-found: error

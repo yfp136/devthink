@@ -313,8 +313,15 @@ static int run_headless(int argc, char** argv) {
   std::printf("  OSC 对接: %d (UDP, 灯光台/VJ)\n", port + 2000);
   std::printf("\n按 Ctrl+C 退出\n\n");
 
-  // ---- 主循环：drain 远程队列 → 投递总线 + 心跳 tick + 喂狗 ----
+  // ---- 主循环：drain 远程队列 → 投递总线 + 心跳 tick + PGM 预览 + 喂狗 ----
   auto last_tick = std::time(nullptr);
+
+  // P1-3 PGM 实时预览驱动：播放/暂停期间以 ~10Hz 抓取最新解码帧，
+  // 经 gateway.on_pgm_frame → /ws/preview 推给浏览器。空 JPEG（无媒体/无
+  // 解码后端）不推；静止画面与上一帧相同不重复推，避免无谓带宽与 CPU。
+  std::string last_pgm_jpeg;
+  int preview_div = 0;
+
   while (g_running.load()) {
     // 排空远程指令队列，投递到消息总线
     queue.drain([&](const sm::web::RemoteCommand& cmd) {
@@ -345,6 +352,23 @@ static int run_headless(int argc, char** argv) {
       for (const auto& desc : sm::engine_registry())
         kernel->heartbeat().note_heartbeat(desc.id, now * 1000);
       last_tick = now;
+    }
+
+    // PGM 实时预览（P1-3）：主循环 50ms/次，每 2 拍 ≈10Hz 抓帧
+    if (++preview_div >= 2) {
+      preview_div = 0;
+      const sm::media::PlayState ps = kernel->media().state();
+      if (ps == sm::media::PlayState::playing ||
+          ps == sm::media::PlayState::paused) {
+        std::string jpeg = sm::platform::capture_pgm_frame_jpeg();
+        if (!jpeg.empty() && jpeg != last_pgm_jpeg) {
+          gateway.on_pgm_frame(jpeg);
+          last_pgm_jpeg = std::move(jpeg);
+        }
+      } else if (!last_pgm_jpeg.empty()) {
+        // 离开播放/暂停态即复位，避免跨素材复用旧帧去重
+        last_pgm_jpeg.clear();
+      }
     }
 
     // 喂狗

@@ -243,7 +243,10 @@ json MediaLibrary::query(const json& filters) const {
       {"style_tags", rec.style_tags},
       {"recycle", rec.recycle},
       {"create_ms", rec.create_ms},
-      {"has_thumb", !rec.thumb_b64.empty()}
+      {"has_thumb", !rec.thumb_b64.empty()},
+      // 预处理状态（§9.4 素材卡片状态点：灰待处理/蓝处理中/绿就绪/红失败）
+      {"preproc_status", rec.preproc_status},
+      {"preproc_msg", rec.preproc_msg}
     });
   }
 

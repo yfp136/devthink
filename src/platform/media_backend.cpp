@@ -4,6 +4,12 @@
 #include "platform/media_backend.h"
 #include "platform/jpeg_codec.h"  // 自包含 baseline JPEG 编码器
 
+// P1-2（规格书 2.3 RHI）：Windows 真实媒体后端下引入渲染上下文，
+// capture_pgm_frame_jpeg 改从 D3D11 离屏渲染帧读取（上传 → 合成 → 回读）。
+#if defined(_WIN32) && defined(SM_HAS_D3D11)
+#include "platform/rhi/rhi.h"
+#endif
+
 // Windows WASAPI 真实渲染（仅 SM_HAS_FFMPEG 分支使用；macOS/Linux stub 不编译）
 #if defined(_WIN32)
 #ifndef _WIN32_WINNT
@@ -150,6 +156,18 @@ struct MediaState {
   std::mutex vq_mutex;
   std::condition_variable vq_cv;
   static constexpr int VQ_MAX = 5;
+
+#if defined(_WIN32) && defined(SM_HAS_D3D11)
+  // PGM 离屏渲染上下文（规格 2.3 / P1-2）：视频帧上传为纹理后经 4 层
+  // 混合合成到离屏渲染目标，capture 回读该渲染帧（不再解码帧直出）。
+  // 线程模型：RHI 对象仅由 capture_pgm_frame_jpeg 所在线程访问（rhi.h
+  // 注释：单所有者），rhi_mutex 兜底并发；合成器不可 resize，尺寸跟随
+  // 视频帧，画面尺寸变化时整体重建。
+  std::shared_ptr<sm::rhi::IDevice> rhi_dev;  // 后端设备（延迟创建）
+  std::shared_ptr<sm::rhi::IPgmMixer> mixer;  // 离屏合成器
+  std::shared_ptr<sm::rhi::ITexture> layer_tex[sm::rhi::IPgmMixer::kMaxLayers]{};  // 上传纹理（0 = 视频帧）
+  std::mutex rhi_mutex;
+#endif
 
   // 音频缓冲队列
   struct AudioChunk {
@@ -908,19 +926,118 @@ std::string generate_thumbnail(const std::string& file_path, int64_t duration_ms
   return result;
 }
 
-// ---- D3D11 PGM 帧捕获 ----
+// ---- PGM 渲染上下文（P1-2）----
+// 延迟创建 D3D11 设备 + 合成器 + 视频上传纹理。合成器不可 resize，
+// 画面尺寸变化（或首次 / 上次创建失败）时整体重建。
+// 返回 false = 无渲染上下文，调用方按 media_backend.h 语义返回空串。
+#if defined(_WIN32) && defined(SM_HAS_D3D11)
+static bool ensure_pgm_render_context(int video_w, int video_h) {
+  if (video_w <= 0 || video_h <= 0) return false;
+
+  if (!g_state.rhi_dev) {
+    g_state.rhi_dev = sm::rhi::create_device();
+    if (!g_state.rhi_dev) return false;
+    std::fprintf(stderr, "[pgm] RHI backend: %s\n",
+                 g_state.rhi_dev->backend_name());
+  }
+
+  const std::uint32_t w = static_cast<std::uint32_t>(video_w);
+  const std::uint32_t h = static_cast<std::uint32_t>(video_h);
+  if (!g_state.mixer || !g_state.layer_tex[0] ||
+      g_state.mixer->width() != w || g_state.mixer->height() != h) {
+    for (auto& t : g_state.layer_tex) t = nullptr;
+    g_state.mixer = g_state.rhi_dev->create_pgm_mixer(w, h);
+    if (!g_state.mixer) return false;
+
+    sm::rhi::Texture2DDesc desc{};
+    desc.format = sm::rhi::PixelFormat::Rgba8;
+    desc.width = w;
+    desc.height = h;
+    desc.render_target = false;  // 普通上传纹理（视频帧）
+    g_state.layer_tex[0] = g_state.rhi_dev->create_texture(desc);
+    if (!g_state.layer_tex[0]) {
+      g_state.mixer = nullptr;  // 允许下次调用重试
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
+// ---- D3D11 PGM 帧捕获（规格 2.3 / P1-2）----
+// 有渲染上下文：最新解码帧 → 上传纹理 → 4 层混合合成 → 回读渲染帧 →
+// JPEG base64。无渲染上下文（stub / 设备不可用 / 无帧）：返回空串，
+// 对齐 media_backend.h"如果无 D3D11 渲染上下文，返回空字符串"。
 std::string capture_pgm_frame_jpeg() {
-  // 从视频帧队列取出最新帧 → JPEG 编码 → base64
-  std::lock_guard<std::mutex> lk(g_state.vq_mutex);
-  if (g_state.vqueue.empty()) return "";
+#if defined(_WIN32) && defined(SM_HAS_D3D11)
+  // 1) 队列锁内快速拷贝最新帧（编码/渲染不在锁内做，避免阻塞解码线程）
+  MediaState::VideoFrame vf;
+  {
+    std::lock_guard<std::mutex> lk(g_state.vq_mutex);
+    if (g_state.vqueue.empty()) return "";
+    vf = g_state.vqueue.back();
+  }
+  if (vf.rgb.empty()) return "";
 
-  auto& vf = g_state.vqueue.back();
+  // 2) 渲染上下文（RHI 单所有者线程：capture 调用方）
+  std::lock_guard<std::mutex> rlk(g_state.rhi_mutex);
+  if (!ensure_pgm_render_context(vf.width, vf.height)) return "";
 
-  // 帧为连续 RGB24（无行填充）→ 自包含 JPEG 编码 → base64
-  std::vector<uint8_t> jpg =
-      encode_jpeg_rgb24(vf.rgb.data(), vf.width, vf.height);
+  const std::uint32_t w = static_cast<std::uint32_t>(vf.width);
+  const std::uint32_t h = static_cast<std::uint32_t>(vf.height);
+
+  // 3) RGB24 → RGBA8（alpha=255）→ 上传 → 绑定 layer0（Replace 直通）
+  std::vector<std::uint8_t> rgba(static_cast<size_t>(w) * h * 4);
+  const std::uint8_t* src = vf.rgb.data();
+  std::uint8_t* dst = rgba.data();
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* row = src + static_cast<size_t>(y) * w * 3;
+    std::uint8_t* drow = dst + static_cast<size_t>(y) * w * 4;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      drow[x * 4 + 0] = row[x * 3 + 0];
+      drow[x * 4 + 1] = row[x * 3 + 1];
+      drow[x * 4 + 2] = row[x * 3 + 2];
+      drow[x * 4 + 3] = 255;
+    }
+  }
+  if (!g_state.layer_tex[0]->upload(rgba.data(), w * 4)) return "";
+
+  sm::rhi::BlendConfig cfg;
+  cfg.enable = true;
+  cfg.op = sm::rhi::BlendOp::Replace;  // 视频为底层：直通覆盖
+  cfg.opacity = 1.0f;
+  cfg.mask_key = 0;
+  g_state.mixer->set_layer(0, g_state.layer_tex[0].get(), cfg, true);
+  // 其余层当前无源（字幕/logo 属后续任务），显式解绑防残留
+  for (int i = 1; i < sm::rhi::IPgmMixer::kMaxLayers; ++i)
+    g_state.mixer->set_layer(i, nullptr, sm::rhi::BlendConfig{}, true);
+
+  // 4) 合成（不透明黑底）→ 回读渲染帧
+  std::vector<std::uint8_t> rendered;
+  if (!g_state.mixer->compose_and_readback(0x000000FFu, rendered)) return "";
+  if (rendered.size() < static_cast<size_t>(w) * h * 4) return "";
+
+  // 5) RGBA8 → RGB24 → JPEG → base64
+  std::vector<std::uint8_t> rgb24(static_cast<size_t>(w) * h * 3);
+  const std::uint8_t* rs = rendered.data();
+  std::uint8_t* rd = rgb24.data();
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* row = rs + static_cast<size_t>(y) * w * 4;
+    std::uint8_t* drow = rd + static_cast<size_t>(y) * w * 3;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      drow[x * 3 + 0] = row[x * 4 + 0];
+      drow[x * 3 + 1] = row[x * 4 + 1];
+      drow[x * 3 + 2] = row[x * 4 + 2];
+    }
+  }
+  std::vector<std::uint8_t> jpg =
+      encode_jpeg_rgb24(rgb24.data(), vf.width, vf.height);
   if (jpg.empty()) return "";
   return base64_encode(jpg.data(), jpg.size());
+#else
+  // 无 D3D11 渲染上下文（macOS/Linux stub / Windows 未启用 D3D11）→ 空串
+  return "";
+#endif
 }
 
 // ---- WASAPI 音频初始化 ----

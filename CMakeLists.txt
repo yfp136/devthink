@@ -25,6 +25,7 @@ endif()
 option(SM_BUILD_TESTS "构建单元测试（DoD 前提：ctest 全绿）" ON)
 option(SM_BUILD_APP  "构建内核冒烟程序 sm_kernel_smoke" ON)
 option(SM_BUILD_HEADLESS "构建 headless 服务器 sm_headless（Web 远控）" ON)
+option(SM_BUILD_DESKTOP "构建 Qt 桌面端 sm_desktop（P1-1，需 Qt 6.7+）" OFF)
 
 # ---- 目录定义 -------------------------------------------------------------
 set(SM_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -88,10 +89,21 @@ file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS
   "${SM_SRC_DIR}/engines/light/*.cpp"
   "${SM_SRC_DIR}/engines/pixel/*.cpp"
   "${SM_SRC_DIR}/engines/device/*.cpp"
-  "${SM_SRC_DIR}/platform/*.cpp")
+  "${SM_SRC_DIR}/platform/*.cpp"
+  "${SM_SRC_DIR}/platform/rhi/*.cpp")
 list(APPEND SM_ENGINE_SOURCES ${SM_ENGINE_SUB_SOURCES})
 add_library(sm_engines STATIC ${SM_ENGINE_SOURCES})
 target_link_libraries(sm_engines PUBLIC sm_core)
+
+# ---- D3D11 RHI 后端条件编译（仅 Windows，规格 2.3 / P1-2）----
+# sm_engines 为静态库：d3d11/dxgi/d3dcompiler 为系统库，须 PUBLIC 传递到
+# 最终可执行链接行；SM_HAS_D3D11 只对库内 TU（rhi.cpp 工厂开关 +
+# rhi_d3d11.cpp 真实现）有意义 → PRIVATE（与 SM_HAS_FFMPEG 同模式）。
+# Windows SDK 默认自带 d3d11.lib/dxgi.lib/d3dcompiler.lib，无需 find_package。
+if(WIN32)
+  target_link_libraries(sm_engines PUBLIC d3d11 dxgi d3dcompiler)
+  target_compile_definitions(sm_engines PRIVATE SM_HAS_D3D11=1)
+endif()
 
 # ---- Phase 2: FFmpeg 条件链接（仅 Windows + vcpkg 可用时）----
 if(WIN32)
@@ -200,6 +212,39 @@ if(SM_BUILD_HEADLESS)
   if(WIN32)
     target_link_libraries(sm_headless PRIVATE ws2_32)
   endif()
+endif()
+
+# ============================================================================
+# sm_desktop：Qt 桌面端（P1-1，目标平台 Windows）
+# 规格 §2.1 技术栈：Qt 6.7+ / QML / Qt Quick Controls 2 / 自动 moc/rcc。
+# 线程模型：Kernel 与 MsgBus 运行在专用 worker 线程（MsgBus 非线程安全），
+#           Qt GUI 线程仅经队列信号收发 JSON 状态/事件/帧（见 kernel_host.h）。
+# 默认 OFF：本机无 Qt 时不影响 sm_kernel_smoke / sm_headless / ctest 构建。
+# Windows 实机构建与 windeployqt 部署步骤见 docs/BUILD_WINDOWS.md。
+# ============================================================================
+if(SM_BUILD_DESKTOP)
+  find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
+
+  add_executable(sm_desktop
+    "${SM_SRC_DIR}/app/main_qt.cpp"
+    "${SM_SRC_DIR}/app/qt/kernel_host.cpp"
+    "${SM_SRC_DIR}/app/qt/kernel_host.h"
+    "${SM_SRC_DIR}/app/qt/ui_controller.cpp"
+    "${SM_SRC_DIR}/app/qt/ui_controller.h"
+    "${SM_SRC_DIR}/app/qt/qml/qml.qrc")
+  target_link_libraries(sm_desktop PRIVATE
+    sm_core sm_engines
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+  target_include_directories(sm_desktop PRIVATE
+    "${SM_SRC_DIR}" "${SM_THIRD_PARTY_DIR}")
+  set_target_properties(sm_desktop PROPERTIES
+    AUTOMOC ON
+    AUTORCC ON)
+  if(WIN32)
+    # 无控制台子系统；配合 qt_finalize_executable 生成 windeployqt 部署规则
+    set_target_properties(sm_desktop PROPERTIES WIN32_EXECUTABLE TRUE)
+  endif()
+  qt_finalize_executable(sm_desktop)
 endif()
 
 # ============================================================================

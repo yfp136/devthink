@@ -1,0 +1,20 @@
+<!DOCTYPE RCC>
+<!-- ShowMaster 桌面端 QML 资源（P1-1-D）
+     前缀 /qml 与磁盘目录结构保真（本文件位于 qt/qml/ 下）：
+       qrc:/qml/Main.qml            顶层窗口（六区骨架 + 事件分发）
+       qrc:/qml/UiStyle.js          共享样式/工具单例（.pragma library：JS 库引擎级单例）
+       qrc:/qml/panels/*.qml        C2–C6 六个面板（Main.qml 以 import "panels" 解析；
+                                    面板以 import "../UiStyle.js" as UiStyle 访问样式）
+     新增面板/样式文件时须同步在此登记（AUTORCC 增量感知）。 -->
+<RCC>
+    <qresource prefix="/qml">
+        <file>Main.qml</file>
+        <file>UiStyle.js</file>
+        <file>panels/TopBar.qml</file>
+        <file>panels/StatusBar.qml</file>
+        <file>panels/MediaLibraryPanel.qml</file>
+        <file>panels/PreviewStage.qml</file>
+        <file>panels/InspectorPanel.qml</file>
+        <file>panels/TimelineDock.qml</file>
+    </qresource>
+</RCC>
