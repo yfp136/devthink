@@ -41,16 +41,36 @@ jobs:
         shell: pwsh
         run: ctest --preset windows-msvc-debug --output-on-failure
 
-      - name: Smoke test headless (start → HTTP request → stop)
+      - name: Smoke test headless (start → login → HTTP request → stop)
         shell: pwsh
         run: |
+          # /api/status 需要会话 token（默认账号 admin/admin123，见 src/web/auth.cpp）
+          # 故先轮询 /api/login 等服务就绪并换取 token，再带 Bearer 校验 /api/status。
           $proc = Start-Process -FilePath "build\windows-msvc-debug\sm_headless.exe" `
             -ArgumentList "--port","8099" -PassThru -NoNewWindow
-          Start-Sleep -Seconds 3
-          $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8099/api/status" -UseBasicParsing -TimeoutSec 5
-          if ($resp.StatusCode -ne 200) { throw "status check failed" }
-          Write-Host "Headless smoke test passed"
-          Stop-Process -Id $proc.Id -Force
+          try {
+            $login = $null
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $login = Invoke-RestMethod -Uri "http://127.0.0.1:8099/api/login" `
+                  -Method Post -ContentType "application/json" `
+                  -Body '{"username":"admin","password":"admin123"}' -TimeoutSec 3
+                if ($login.token) { break }
+              } catch { }
+            }
+            if (-not $login -or -not $login.token) {
+              throw "headless server not ready or login failed"
+            }
+            $hdr = @{ Authorization = "Bearer $($login.token)" }
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8099/api/status" `
+              -Headers $hdr -UseBasicParsing -TimeoutSec 5
+            if ($resp.StatusCode -ne 200) { throw "status check failed: HTTP $($resp.StatusCode)" }
+            $status = $resp.Content | ConvertFrom-Json
+            Write-Host "Headless smoke test passed (engines=$($status.engines.Count) sessions=$($status.sessions))"
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
 
       - name: Upload binaries (kernel + engine DLLs + headless)
         uses: actions/upload-artifact@v4
