@@ -102,8 +102,10 @@ if(WIN32)
     # 可执行（sm_headless）与插件 DLL 的链接行与编译环境；
     # SM_HAS_FFMPEG 仅对库内 TU（media_backend.cpp）有意义 → PRIVATE。
     # ole32：COM/WASAPI（CoInitializeEx/CoCreateInstance/CLSID_*）。
+    # uuid：initguid.h 实体化的 WASAPI/COM GUID 符号
+    # （CLSID_MMDeviceEnumerator / IID_IAudioClient 等定义于 uuid.lib）。
     target_link_libraries(sm_engines PUBLIC
-      ${FFMPEG_LIBRARIES} ole32)
+      ${FFMPEG_LIBRARIES} ole32 uuid)
     target_include_directories(sm_engines PUBLIC ${FFMPEG_INCLUDE_DIRS})
     target_compile_definitions(sm_engines PRIVATE SM_HAS_FFMPEG=1)
     message(STATUS "FFmpeg found — enabling real media backend")
