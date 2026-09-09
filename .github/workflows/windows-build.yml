@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies (vcpkg: sqlite3 + ffmpeg)
+      - name: Install dependencies (vcpkg sqlite3 + ffmpeg)
         shell: pwsh
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sqlite3:x64-windows
