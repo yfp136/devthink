@@ -38,5 +38,20 @@ sm_add_unit_test(test_playlist sm_engines)
 # M1 素材库导入管线（§10.1 导入/分类/查询/回收站/引用保护/标签）
 sm_add_unit_test(test_media_lib sm_engines)
 
+# Phase 2 硬件时序中控引擎（§3.2 engine.device：时序/急停/IO/联控）
+sm_add_unit_test(test_device_engine sm_engines)
+
+# Phase 2 引擎行为契约（vjfx/led/light/pixel 真实引擎 headless 断言）
+sm_add_unit_test(test_vjfx_engine sm_engines)
+sm_add_unit_test(test_led_engine sm_engines)
+sm_add_unit_test(test_light_engine sm_engines)
+sm_add_unit_test(test_pixel_engine sm_engines)
+
 # Kernel 集成测试（M1-M5 引擎互连 + 总线路由 + 回调链）
 sm_add_unit_test(test_kernel sm_engines sm_core)
+
+# OSC 协议适配器（OSC 1.0 编解码）
+sm_add_unit_test(test_osc sm_protocols)
+
+# 自包含 JPEG 编码器（RGB24 → baseline JFIF，标记/尺寸/确定性校验）
+sm_add_unit_test(test_jpeg_codec sm_engines)

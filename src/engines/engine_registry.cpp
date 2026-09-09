@@ -8,16 +8,16 @@
 
 namespace sm {
 
-// 规格 §3.2 引擎注册表：7 项（2 个 Phase 1 实现 + 5 个 Phase 1 空壳）
+// 规格 §3.2 引擎注册表：7 项（Phase 1 内核 2 项 + Phase 2 真实引擎 5 项）
 const std::vector<EngineDescriptor>& engine_registry() {
   static const std::vector<EngineDescriptor> kEngines = {
       {"engine.media",    "MediaEngine.dll",    "M2 MediaEngine",  "Phase 1 实现"},
       {"engine.timeline", "TimelineEngine.dll", "M5 时间线引擎",    "Phase 1 实现"},
-      {"engine.vjfx",     "VjfxEngine.dll",     "VJ 特效引擎",      "Phase 1 空壳"},
-      {"engine.led",      "LedEngine.dll",      "LED 播控引擎",     "Phase 1 空壳"},
-      {"engine.light",    "LightEngine.dll",    "灯光引擎",         "Phase 1 空壳"},
-      {"engine.pixel",    "PixelEngine.dll",    "像素灯带引擎",     "Phase 1 空壳"},
-      {"engine.device",   "DeviceEngine.dll",   "硬件中控引擎",     "Phase 1 空壳"},
+      {"engine.vjfx",     "VjfxEngine.dll",     "VJ 特效引擎",      "Phase 2 实现"},
+      {"engine.led",      "LedEngine.dll",      "LED 播控引擎",     "Phase 2 实现"},
+      {"engine.light",    "LightEngine.dll",    "灯光引擎",         "Phase 2 实现"},
+      {"engine.pixel",    "PixelEngine.dll",    "像素灯带引擎",     "Phase 2 实现"},
+      {"engine.device",   "DeviceEngine.dll",   "硬件中控引擎",     "Phase 2 实现"},
   };
   return kEngines;
 }

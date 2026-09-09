@@ -72,7 +72,9 @@ endif()
 target_link_libraries(sm_core PUBLIC sm_sqlite3)
 
 # ============================================================================
-# sm_engines：六引擎骨架（Phase 1 空壳 + registry）
+# sm_engines：内核引擎静态库
+# Phase 1：timeline/media/scene/playlist/media_lib + 平台后端（含 FFmpeg 条件）
+# Phase 2：追加 vjfx/led/light/pixel/device 真实引擎（无 UI，headless 可测）
 # ============================================================================
 file(GLOB SM_ENGINE_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/engines/*.cpp")
 file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS
@@ -81,6 +83,11 @@ file(GLOB SM_ENGINE_SUB_SOURCES CONFIGURE_DEPENDS
   "${SM_SRC_DIR}/engines/scene/*.cpp"
   "${SM_SRC_DIR}/engines/playlist/*.cpp"
   "${SM_SRC_DIR}/engines/media_lib/*.cpp"
+  "${SM_SRC_DIR}/engines/vjfx/*.cpp"
+  "${SM_SRC_DIR}/engines/led/*.cpp"
+  "${SM_SRC_DIR}/engines/light/*.cpp"
+  "${SM_SRC_DIR}/engines/pixel/*.cpp"
+  "${SM_SRC_DIR}/engines/device/*.cpp"
   "${SM_SRC_DIR}/platform/*.cpp")
 list(APPEND SM_ENGINE_SOURCES ${SM_ENGINE_SUB_SOURCES})
 add_library(sm_engines STATIC ${SM_ENGINE_SOURCES})
@@ -88,11 +95,16 @@ target_link_libraries(sm_engines PUBLIC sm_core)
 
 # ---- Phase 2: FFmpeg 条件链接（仅 Windows + vcpkg 可用时）----
 if(WIN32)
-  find_package(FFMPEG QUIET COMPONENTS avcodec avformat avutil)
+  find_package(FFMPEG QUIET
+    COMPONENTS avcodec avformat avutil swresample swscale)
   if(FFMPEG_FOUND)
-    target_link_libraries(sm_engines PRIVATE
-      ${FFMPEG_LIBRARIES})
-    target_include_directories(sm_engines PRIVATE ${FFMPEG_INCLUDE_DIRS})
+    # PUBLIC：sm_engines 为静态库，FFmpeg 库/头文件须传递到最终
+    # 可执行（sm_headless）与插件 DLL 的链接行与编译环境；
+    # SM_HAS_FFMPEG 仅对库内 TU（media_backend.cpp）有意义 → PRIVATE。
+    # ole32：COM/WASAPI（CoInitializeEx/CoCreateInstance/CLSID_*）。
+    target_link_libraries(sm_engines PUBLIC
+      ${FFMPEG_LIBRARIES} ole32)
+    target_include_directories(sm_engines PUBLIC ${FFMPEG_INCLUDE_DIRS})
     target_compile_definitions(sm_engines PRIVATE SM_HAS_FFMPEG=1)
     message(STATUS "FFmpeg found — enabling real media backend")
   else()
@@ -149,11 +161,38 @@ if(WIN32)
 endif()
 
 # ============================================================================
+# sm_remote：远程管控/服务管理（Windows Service + Watchdog + Auto-start）
+# ============================================================================
+file(GLOB SM_REMOTE_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/remote/*.cpp")
+add_library(sm_remote STATIC ${SM_REMOTE_SOURCES})
+target_link_libraries(sm_remote PUBLIC sm_core)
+target_include_directories(sm_remote PUBLIC "${SM_SRC_DIR}" "${SM_THIRD_PARTY_DIR}")
+
+# Windows 服务管理 + 看门狗需要 advapi32（SCM）和 psapi（内存信息）
+if(WIN32)
+  target_link_libraries(sm_remote PUBLIC advapi32 psapi)
+endif()
+
+# ============================================================================
+# sm_protocols：硬件协议适配器（TCP / MIDI / OSC）
+# ============================================================================
+file(GLOB SM_PROTO_SOURCES CONFIGURE_DEPENDS "${SM_SRC_DIR}/protocols/*.cpp")
+add_library(sm_protocols STATIC ${SM_PROTO_SOURCES})
+target_link_libraries(sm_protocols PUBLIC sm_web sm_core)
+target_include_directories(sm_protocols PUBLIC
+  "${SM_SRC_DIR}" "${SM_THIRD_PARTY_DIR}")
+# Windows: MIDI 需要 winmm；所有协议需要 ws2_32（已通过 sm_web 传递）
+if(WIN32)
+  target_link_libraries(sm_protocols PUBLIC winmm)
+endif()
+
+# ============================================================================
 # sm_headless：Headless 服务器模式（工控机常驻，Web 远控入口）
 # ============================================================================
 if(SM_BUILD_HEADLESS)
   add_executable(sm_headless "${SM_SRC_DIR}/app/main_headless.cpp")
-  target_link_libraries(sm_headless PRIVATE sm_web sm_core sm_engines)
+  target_link_libraries(sm_headless PRIVATE
+    sm_web sm_core sm_engines sm_remote sm_protocols)
   if(WIN32)
     target_link_libraries(sm_headless PRIVATE ws2_32)
   endif()
