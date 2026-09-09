@@ -14,7 +14,6 @@
 #endif
 #include <windows.h>
 #include <mmsystem.h>
-#include <midiio.h>
 #pragma comment(lib, "winmm.lib")
 
 static sm::proto::MidiAdapter* g_midi_instance = nullptr;
