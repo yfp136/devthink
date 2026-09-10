@@ -72,6 +72,21 @@ std::string capture_pgm_frame_jpeg() { return ""; }
 bool init_audio_output() { return false; }  // stub 无真实音频输出
 void shutdown_audio_output() {}
 
+// ---- 本地窗口输出 stub（P1-2 收尾）----
+// 无 D3D11 窗口输出能力：open 恒 false，其余为安全的空操作。
+// 契约（media_backend.h）：调用方据此降级为「仅离屏 + 预监」，不得视为致命错误。
+bool has_output_window_capability() { return false; }
+bool open_output_window(void* native_window, int width, int height) {
+  (void)native_window; (void)width; (void)height;
+  return false;
+}
+void close_output_window() {}
+bool is_output_window_open() { return false; }
+void resize_output_window(int width, int height) { (void)width; (void)height; }
+std::string last_output_window_error() {
+  return "no local window output capability (stub platform)";
+}
+
 #else
 // ======================= Windows FFmpeg 真实实现 =======================
 
@@ -167,6 +182,21 @@ struct MediaState {
   std::shared_ptr<sm::rhi::IPgmMixer> mixer;  // 离屏合成器
   std::shared_ptr<sm::rhi::ITexture> layer_tex[sm::rhi::IPgmMixer::kMaxLayers]{};  // 上传纹理（0 = 视频帧）
   std::mutex rhi_mutex;
+
+  // 本地窗口输出（规格第 2 章 1080p60 输出视口 / P1-2 收尾）。
+  // 分层所有：out_* 请求字段（句柄/尺寸/开关）由调用方线程写入，out_mutex 保护；
+  // out_surface（DXGI 交换链）与 rhi_dev 同属渲染所有者线程，只在 rhi_mutex
+  // 区内访问 —— 上层 GUI 线程只投递参数，故不违反 rhi.h 的单所有者约束。
+  // out_failed：建链已判定不可用（降级为「仅离屏 + 预监」），不再逐帧重试；
+  // 再次 open_output_window() 会清除该标记以允许重试。
+  void* out_hwnd = nullptr;
+  std::uint32_t out_req_w = 0;
+  std::uint32_t out_req_h = 0;
+  bool out_requested = false;
+  bool out_failed = false;
+  std::shared_ptr<sm::rhi::IOutputSurface> out_surface;
+  std::mutex out_mutex;
+  std::string out_error;
 #endif
 
   // 音频缓冲队列
@@ -964,9 +994,94 @@ static bool ensure_pgm_render_context(int video_w, int video_h) {
 }
 #endif
 
+// ---- 本地窗口输出（规格第 2 章 1080p60 输出视口 / P1-2 收尾）----
+// 全部在渲染所有者线程的捕获路径内执行（前置条件：已持有 g_state.rhi_mutex）：
+//   请求登记（GUI 线程）→ 建链 → 跟随窗口尺寸 → 每帧 present。
+// 任一步失败即 mark_output_failed_locked() 降级为「仅离屏 + 预监」，
+// 不逐帧重试、不影响 capture 与预监（契约见 media_backend.h）。
+#if defined(_WIN32) && defined(SM_HAS_D3D11)
+static void mark_output_failed_locked(const char* why) {
+  g_state.out_failed = true;
+  g_state.out_surface.reset();
+  {
+    std::lock_guard<std::mutex> lk(g_state.out_mutex);
+    g_state.out_error = why;
+  }
+  std::fprintf(stderr, "[pgm] 输出窗口降级（仅离屏 + 预监）：%s\n", why);
+}
+
+static void sync_output_surface_locked() {
+  // 快照调用方登记的请求（GUI 线程可能随时改写）
+  void* hwnd = nullptr;
+  bool requested = false;
+  std::uint32_t rw = 0;
+  std::uint32_t rh = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_state.out_mutex);
+    requested = g_state.out_requested;
+    hwnd = g_state.out_hwnd;
+    rw = g_state.out_req_w;
+    rh = g_state.out_req_h;
+  }
+
+  // 未请求（含 close_output_window 之后）→ 在本线程释放交换链
+  if (!requested) {
+    if (g_state.out_surface) {
+      g_state.out_surface.reset();
+      std::fprintf(stderr, "[pgm] 输出窗口已关闭（交换链释放）\n");
+    }
+    return;
+  }
+  if (g_state.out_failed) return;  // 已判定不可用：保持降级，不逐帧重试
+  if (!g_state.rhi_dev) return;
+
+  // 设备丢失 / 呈现失败导致关面：保持降级（恢复须由调用方重新 open）
+  if (g_state.out_surface && !g_state.out_surface->is_open()) {
+    mark_output_failed_locked("交换链已关闭（设备丢失或重置）");
+    return;
+  }
+
+  if (!g_state.out_surface) {
+    sm::rhi::OutputWindowDesc desc{};
+    desc.native_window = hwnd;
+    desc.width = rw;
+    desc.height = rh;
+    g_state.out_surface = g_state.rhi_dev->create_output_surface(desc);
+    if (!g_state.out_surface) {
+      mark_output_failed_locked(
+          "create_output_surface 返回 nullptr（无窗口输出能力或建链失败）");
+      return;
+    }
+    std::fprintf(stderr, "[pgm] 输出窗口已建立：%ux%u\n", rw, rh);
+    return;
+  }
+
+  // 窗口尺寸跟随（resize 为异步请求，此处落地）
+  if (rw >= 1 && rh >= 1 && (rw != g_state.out_surface->width() ||
+                             rh != g_state.out_surface->height())) {
+    if (!g_state.out_surface->resize(rw, rh) &&
+        !g_state.out_surface->is_open()) {
+      mark_output_failed_locked("resize 失败且交换链已关闭");
+    }
+  }
+}
+
+// 把合成结果直出到本地窗口；src = IPgmMixer::output()（同一 device 的渲染目标）。
+static void present_output_frame_locked(sm::rhi::ITexture* src,
+                                        std::uint32_t bg_rgba) {
+  if (g_state.out_surface == nullptr || src == nullptr) return;
+  if (!g_state.out_surface->is_open()) return;
+  if (!g_state.out_surface->present(src, bg_rgba, true) &&
+      !g_state.out_surface->is_open()) {
+    mark_output_failed_locked("present 失败且交换链已关闭");
+  }
+}
+#endif
+
 // ---- D3D11 PGM 帧捕获（规格 2.3 / P1-2）----
-// 有渲染上下文：最新解码帧 → 上传纹理 → 4 层混合合成 → 回读渲染帧 →
-// JPEG base64。无渲染上下文（stub / 设备不可用 / 无帧）：返回空串，
+// 有渲染上下文：最新解码帧 → 上传纹理 → 4 层混合合成 → 一帧两用
+//   （a）本地窗口输出视口 present；（b）回读渲染帧 → JPEG base64（预监/网页）。
+// 无渲染上下文（stub / 设备不可用 / 无帧）：返回空串，
 // 对齐 media_backend.h"如果无 D3D11 渲染上下文，返回空字符串"。
 std::string capture_pgm_frame_jpeg() {
 #if defined(_WIN32) && defined(SM_HAS_D3D11)
@@ -1012,9 +1127,17 @@ std::string capture_pgm_frame_jpeg() {
   for (int i = 1; i < sm::rhi::IPgmMixer::kMaxLayers; ++i)
     g_state.mixer->set_layer(i, nullptr, sm::rhi::BlendConfig{}, true);
 
-  // 4) 合成（不透明黑底）→ 回读渲染帧
+  // 4) 合成（不透明黑底）→ 本地窗口直出 → 回读渲染帧
+  //    一次合成两处消费：窗口视口（present）与预监/网页（readback → JPEG）。
+  //    输出窗口不可用（未请求 / 建链失败 / 无能力）时 present 为空操作，
+  //    本函数语义与 P1-2 一致（仅离屏 + 预监）。
+  const std::uint32_t bg_rgba = 0x000000FFu;
+  if (!g_state.mixer->compose(bg_rgba)) return "";
+  sync_output_surface_locked();
+  present_output_frame_locked(g_state.mixer->output(), bg_rgba);
+  g_state.rhi_dev->flush();  // 回读前确保 GPU 完成
   std::vector<std::uint8_t> rendered;
-  if (!g_state.mixer->compose_and_readback(0x000000FFu, rendered)) return "";
+  if (!g_state.mixer->output()->readback(rendered)) return "";
   if (rendered.size() < static_cast<size_t>(w) * h * 4) return "";
 
   // 5) RGBA8 → RGB24 → JPEG → base64
@@ -1039,6 +1162,96 @@ std::string capture_pgm_frame_jpeg() {
   return "";
 #endif
 }
+
+// ---- 本地窗口输出公共接口（P1-2 收尾）----
+// 契约见 media_backend.h：GUI 线程只投递「句柄 + 尺寸」，交换链的建立/重建/
+// 呈现全部发生在渲染所有者线程（capture_pgm_frame_jpeg 调用线程）内，
+// 故 Qt 侧永不触碰 DXGI 对象（契合 rhi.h 的单所有者约束）。
+#if defined(_WIN32) && defined(SM_HAS_D3D11)
+bool has_output_window_capability() { return true; }
+
+bool open_output_window(void* native_window, int width, int height) {
+  sm::rhi::OutputWindowDesc desc{};
+  desc.native_window = native_window;
+  desc.width = width > 0 ? static_cast<std::uint32_t>(width) : 0u;
+  desc.height = height > 0 ? static_cast<std::uint32_t>(height) : 0u;
+  if (!sm::rhi::is_valid_output_window_desc(desc)) {
+    std::lock_guard<std::mutex> lk(g_state.out_mutex);
+    g_state.out_error = "输出窗口参数非法（句柄为空或尺寸越界）";
+    std::fprintf(stderr, "[pgm] 输出窗口请求被拒：%s\n", g_state.out_error.c_str());
+    return false;
+  }
+
+  bool changed = true;
+  {
+    std::lock_guard<std::mutex> lk(g_state.out_mutex);
+    const bool same = g_state.out_requested &&
+                      g_state.out_hwnd == native_window &&
+                      g_state.out_req_w == desc.width &&
+                      g_state.out_req_h == desc.height;
+    // 同句柄同尺寸且未失败 → 幂等；否则（含上次失败）重新建链
+    changed = !same || g_state.out_failed;
+    g_state.out_hwnd = native_window;
+    g_state.out_req_w = desc.width;
+    g_state.out_req_h = desc.height;
+    g_state.out_requested = true;
+    if (changed) {
+      g_state.out_failed = false;
+      g_state.out_error.clear();
+    }
+  }
+  std::fprintf(stderr,
+               "[pgm] 输出窗口请求已登记：句柄=%p 视口=%ux%u（交换链由渲染线程建立）\n",
+               native_window, desc.width, desc.height);
+  return true;
+}
+
+void close_output_window() {
+  // 只清请求；out_surface 由所有者线程在下一次捕获时释放（避免跨线程析构
+  // DXGI 对象）。故关闭后窗口立即停止刷新，交换链在下一次捕获时释放。
+  std::lock_guard<std::mutex> lk(g_state.out_mutex);
+  g_state.out_requested = false;
+  g_state.out_hwnd = nullptr;
+  g_state.out_req_w = 0;
+  g_state.out_req_h = 0;
+  g_state.out_error.clear();
+}
+
+bool is_output_window_open() {
+  std::lock_guard<std::mutex> lk(g_state.out_mutex);
+  return g_state.out_requested && !g_state.out_failed;
+}
+
+void resize_output_window(int width, int height) {
+  if (width <= 0 || height <= 0) return;
+  const std::uint32_t w = static_cast<std::uint32_t>(width);
+  const std::uint32_t h = static_cast<std::uint32_t>(height);
+  if (w > sm::rhi::kMaxOutputDimension || h > sm::rhi::kMaxOutputDimension)
+    return;
+  std::lock_guard<std::mutex> lk(g_state.out_mutex);
+  if (!g_state.out_requested) return;
+  g_state.out_req_w = w;
+  g_state.out_req_h = h;
+}
+
+std::string last_output_window_error() {
+  std::lock_guard<std::mutex> lk(g_state.out_mutex);
+  return g_state.out_error;
+}
+#else
+// 有媒体后端但无 D3D11：无窗口输出能力，全部按降级空操作处理。
+bool has_output_window_capability() { return false; }
+bool open_output_window(void* native_window, int width, int height) {
+  (void)native_window; (void)width; (void)height;
+  return false;
+}
+void close_output_window() {}
+bool is_output_window_open() { return false; }
+void resize_output_window(int width, int height) { (void)width; (void)height; }
+std::string last_output_window_error() {
+  return "no local window output capability (SM_HAS_D3D11 disabled)";
+}
+#endif
 
 // ---- WASAPI 音频初始化 ----
 bool init_audio_output() {

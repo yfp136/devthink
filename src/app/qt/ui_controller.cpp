@@ -39,8 +39,34 @@ int UiController::show() {
     return 1;
   }
 
-  // 3) QML 事件循环已就绪后启动内核：kernelReady/statusChanged 等上行
-  //    信号已在 Main.qml Component.onCompleted 中连接，不会因时序漏接。
+  // 3) 装配本地输出视口（P1-2 收尾 / 规格第 2 章「1080p60 输出视口」）
+  //    ---------------------------------------------------------------------
+  //    引擎侧（media_backend.cpp）已把「一次合成 → 窗口直出 + 预监回读」接好，
+  //    此处只负责把 Qt 顶层窗口的句柄与客户区尺寸登记进去：
+  //      QWindow::winId() ──▶ platform::open_output_window(hwnd, w, h)
+  //    交换链由渲染线程（KernelWorker 的捕获线程）按需建立并每帧 present，
+  //    GUI 线程不触碰任何 D3D/DXGI 对象。
+  //    先连接降级信号再 open()，确保建窗/登记失败的首次降级也被记录。
+  //    SM_NO_OUTPUT_WINDOW 可显式关闭输出视口（离屏 + 预监仍完全可用）。
+  connect(&out_window_, &OutputWindow::degraded, this,
+          [](const QString& reason) {
+            if (reason.isEmpty()) {
+              qInfo("UiController: 输出视口可用（渲染线程将按需建立交换链）");
+            } else {
+              qWarning().noquote()
+                  << "UiController: 输出视口降级（仅离屏 + 预监）：" << reason;
+            }
+          });
+  if (qEnvironmentVariableIsSet("SM_NO_OUTPUT_WINDOW")) {
+    qInfo("UiController: SM_NO_OUTPUT_WINDOW 已设置，跳过输出视口装配");
+  } else {
+    // 失败非致命：open() 内部已告警并发降级信号，返回 false 无需处理。
+    out_window_.open();
+  }
+
+  // 4) QML 事件循环已就绪、输出视口已登记，此时启动内核：kernelReady/
+  //    statusChanged 等上行信号已在 Main.qml Component.onCompleted 中连接，
+  //    不会因时序漏接。
   host_.start();
   return 0;
 }

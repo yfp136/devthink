@@ -235,6 +235,8 @@ if(SM_BUILD_DESKTOP)
     "${SM_SRC_DIR}/app/qt/kernel_host.h"
     "${SM_SRC_DIR}/app/qt/ui_controller.cpp"
     "${SM_SRC_DIR}/app/qt/ui_controller.h"
+    "${SM_SRC_DIR}/app/qt/output_window.cpp"
+    "${SM_SRC_DIR}/app/qt/output_window.h"
     "${SM_SRC_DIR}/app/qt/qml/qml.qrc")
   target_link_libraries(sm_desktop PRIVATE
     sm_core sm_engines
