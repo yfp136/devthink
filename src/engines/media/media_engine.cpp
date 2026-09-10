@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "core/error_codes.h"
+
 namespace sm {
 namespace media {
 
@@ -62,6 +64,8 @@ ItemPlayConfig MediaEngine::parse_config(
     const std::string& media_id, const nlohmann::json& meta) {
   ItemPlayConfig cfg;
   cfg.media_id = media_id;
+  // meta 可携带已解析的媒体文件路径；缺省时退回 media_id（平台层自行解析）
+  cfg.media_path = meta.value("media_path", std::string());
   cfg.trim_in_ms = meta.value("trim_in_ms", 0);
   cfg.duration_ms = meta.value("duration_ms", 0);
   cfg.gain_db = meta.value("gain_db", 0.0);
@@ -92,7 +96,7 @@ bool MediaEngine::preload(const std::string& item_id,
       if (!open_cb_(current_config_.media_path.empty() ? media_id
                                                         : current_config_.media_path,
                      current_config_.trim_in_ms)) {
-        enter_error("open_failed");
+        enter_error("open_failed", ec::DECODE_FAILED);
         return false;
       }
     }
@@ -109,9 +113,12 @@ bool MediaEngine::preload(const std::string& item_id,
     current_media_ = media_id;
     current_config_ = parse_config(media_id, meta);
     if (open_cb_) {
-      open_cb_(current_config_.media_path.empty() ? media_id
-                                                   : current_config_.media_path,
-               current_config_.trim_in_ms);
+      if (!open_cb_(current_config_.media_path.empty() ? media_id
+                                                        : current_config_.media_path,
+                    current_config_.trim_in_ms)) {
+        enter_error("open_failed", ec::DECODE_FAILED);
+        return false;
+      }
     }
     return true;
   }
@@ -136,13 +143,40 @@ void MediaEngine::play(const std::string& item_id,
   }
 }
 
-void MediaEngine::stop(const std::string& item_id) {
+// item_id 保留以与 play() 接口对称；停止语义为「无条件停当前条目」，
+// 不参与判定，故显式标注未使用形参（§11.4.1 零新增告警）。
+void MediaEngine::stop(const std::string& /*item_id*/) {
   if (state_.load() == PlayState::playing ||
       state_.load() == PlayState::paused) {
     if (stop_cb_)
       stop_cb_(current_config_.fade_out_ms);
   }
   reset_to_idle();
+}
+
+// §10.2.4：playing → paused；其余状态不下发
+bool MediaEngine::pause() {
+  if (state_.load() != PlayState::playing) return false;
+  state_ = PlayState::paused;
+  if (pause_cb_) pause_cb_();
+  return true;
+}
+
+// §10.2.4：paused → playing；其余状态不下发
+bool MediaEngine::resume() {
+  if (state_.load() != PlayState::paused) return false;
+  state_ = PlayState::playing;
+  if (resume_cb_) resume_cb_();
+  return true;
+}
+
+// §10.2.4：仅播放/暂停态可定位
+bool MediaEngine::seek(int64_t pos_ms) {
+  const PlayState s = state_.load();
+  if (s != PlayState::playing && s != PlayState::paused) return false;
+  if (pos_ms < 0) return false;
+  if (seek_cb_) seek_cb_(pos_ms);
+  return true;
 }
 
 void MediaEngine::preview(const std::string& media_path) {
@@ -177,8 +211,20 @@ int64_t MediaEngine::duration_ms() const {
   return current_config_.duration_ms;
 }
 
-void MediaEngine::enter_error(const std::string& reason) {
+void MediaEngine::enter_error(const std::string& reason, int code) {
+  const std::string item = current_item_;
   state_ = PlayState::error;
+  // §5.4：错误时广播 evt.error（携带 §5.5 错误码）
+  // 载荷对齐 §5.4 契约 {code, msg, source}，同时保留既有扩展字段
+  // （message / module / item_id）以便诊断，属超集而非替换。
+  if (event_cb_) {
+    event_cb_("evt.error", {{"code", code},
+                            {"msg", reason},
+                            {"source", "engine.media"},
+                            {"message", reason},
+                            {"module", "media"},
+                            {"item_id", item}});
+  }
   if (ended_cb_ && !current_item_.empty())
     ended_cb_(current_item_, "error:" + reason);
   // 错误后回到 idle

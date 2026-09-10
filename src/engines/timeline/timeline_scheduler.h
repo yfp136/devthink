@@ -37,6 +37,11 @@ enum class TrackType {
 
 const char* track_type_name(TrackType t);
 
+// 字符串 → 轨道类型（timeline.track_configure 的 type 字段，§7.4/§5.3）；
+// 无法识别时回退到 fallback（默认 audio），保持工程载入向前兼容
+TrackType track_type_from_string(const std::string& s,
+                                 TrackType fallback = TrackType::audio);
+
 // ---- 条目状态 ----
 enum class ItemState {
   scheduled,   // 待执行
@@ -89,6 +94,7 @@ struct Track {
   int index = 0;
   TrackType type = TrackType::audio;
   std::string name;
+  bool enabled = true;         // timeline.track_configure 下发（§7.4）
   std::vector<ItemPtr> items;  // 按 start_ms 排序
 };
 
@@ -120,6 +126,14 @@ using ItemEventFn =
     std::function<void(const std::string& evt_name, const TimelineItem& item,
                        const std::string& reason)>;
 
+// ---- 轨道配置（timeline.track_configure 下发，§7.4）----
+struct TrackConfig {
+  int index = 0;
+  TrackType type = TrackType::audio;
+  std::string name;
+  bool enabled = true;
+};
+
 // ---- TimelineScheduler（§7.3 调度器核心）----
 class TimelineScheduler {
  public:
@@ -136,9 +150,11 @@ class TimelineScheduler {
   // ---- 轨道配置 ----
   // 从工程载入轨道配置（track_index → type + name）；P1 默认 4 启用轨
   void configure_tracks(const std::vector<std::pair<TrackType, std::string>>& tracks);
+  // 从 timeline.track_configure 载入（含 enabled）；返回错误码（0=成功）
+  int configure_tracks(const std::vector<TrackConfig>& tracks);
 
   // ---- 条目管理（编辑 API）----
-  // 插入条目；返回错误码（0=成功，3001=轨道不存在，3002=同轨同起点冲突可选）
+  // 插入条目；返回错误码（0=成功，3001=轨道不存在，3002=同轨同起点冲突，§7.4）
   int insert_item(const TimelineItem& item);
   // 删除条目；正在播放的条目自然结束（aborted 语义）
   bool remove_item(const std::string& item_id);
@@ -147,13 +163,19 @@ class TimelineScheduler {
                    const std::function<void(TimelineItem&)>& updater);
   // 查询条目
   ItemPtr find_item(const std::string& item_id) const;
+  // 全部条目（所有轨道，按 item_id 有序）——供 Kernel 统计引用关系
+  std::vector<ItemPtr> all_items() const;
+
+  // 清空全部轨道条目并复位状态机（timeline.load 整体替换前调用，§10.6 禁止半载入）
+  void clear_items();
 
   // ---- 播放控制 ----
   void play(int64_t start_from_ms = 0);
   void pause();
   void resume();
   void stop();
-  void seek(int64_t pos_ms);
+  // 定位播放头；返回错误码（0=成功，3003=播放头越界，§5.5）
+  int seek(int64_t pos_ms);
 
   PlayState play_state() const { return state_.load(); }
   int64_t pos_ms() const { return pos_ms_.load(); }

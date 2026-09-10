@@ -32,6 +32,13 @@ class TimelineEngine {
   // 注册为总线 sink（dst = engine.timeline）
   void register_bus();
 
+  // §5.4 evt.transport.bpm {bpm, confidence} 上报入口。
+  // Phase 1 的实时节拍源为 MIDI Clock 检测（proto::MidiAdapter::bpm()），
+  // 由宿主在检测值变化时调用；亦供离线导入/测试直接注入。
+  // confidence 为 0..1 置信度；bpm <= 0 视为无效直接丢弃。
+  // 与 evt.transport.clock 同为广播事件，不做状态机耦合；重复值不重发。
+  void report_bpm(double bpm, double confidence);
+
   // 媒体回调设置（由 M2 MediaEngine 注入）
   void set_media_preload_cb(MediaPreloadFn cb) { scheduler_->set_media_preload_cb(std::move(cb)); }
   void set_media_play_cb(MediaPlayFn cb) { scheduler_->set_media_play_cb(std::move(cb)); }
@@ -51,6 +58,11 @@ class TimelineEngine {
 
   std::thread tick_thread_;
   std::atomic<bool> running_{false};
+
+  // §5.4 evt.transport.bpm 去重游标：MIDI 时钟按 24ppq 连续刷新，
+  // 数值未变即视为同一节拍，不重复广播（-1 为无效哨兵，bpm<=0 已在上游丢弃）。
+  std::atomic<double> last_bpm_{-1.0};
+  std::atomic<double> last_bpm_confidence_{-1.0};
 
   // 播放时钟：用单调时钟模拟（实际部署由 M2 音频时钟驱动）
   std::atomic<int64_t> play_start_ms_{0};

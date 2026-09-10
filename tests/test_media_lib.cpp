@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "core/error_codes.h"
 #include "engines/media_lib/media_library.h"
 #include "test_common.h"
 
@@ -223,6 +224,130 @@ void test_query_name_filter() {
   SM_CHECK_EQ(q["total"], 1);
 }
 
+// ---- §10.1.4 purge_ex 错误码明细（2001 / 5003）----
+// 素材不存在 → 2001；被引用 → 5003 且 message 含被引用明细；
+// packaged=1（打包工程内素材）→ 5003，均不得真正删除记录。
+void test_purge_ex_error_codes() {
+  MediaLibrary lib;
+  lib.set_copy_cb([](const auto&, const auto&) { return true; });
+  lib.set_probe_cb([](const auto&) { return json{}; });
+  lib.set_thumb_cb([](const auto&, int64_t) { return ""; });
+
+  // 1) 素材不存在 → 2001「素材不存在」
+  auto missing = lib.purge_ex("med_not_exist");
+  SM_CHECK(!missing.ok);
+  SM_CHECK_EQ(missing.error_code, sm::ec::FILE_MISSING);
+  SM_CHECK(missing.message.find("素材不存在") != std::string::npos);
+
+  auto res = lib.import_files({"/a.mp4"}, false);
+  std::string id = res["results"][0]["media_id"];
+
+  // 2) 有引用明细 → 5003，message 必须列出被引用条目
+  auto refd = lib.purge_ex(id, {"itm_001", "playlist/pit_002"});
+  SM_CHECK(!refd.ok);
+  SM_CHECK_EQ(refd.error_code, sm::ec::REFERENCED_OBJECT_MISSING);
+  SM_CHECK(refd.message.find("被引用明细") != std::string::npos);
+  SM_CHECK(refd.message.find("itm_001") != std::string::npos);
+  SM_CHECK(refd.message.find("playlist/pit_002") != std::string::npos);
+  SM_CHECK_EQ(lib.count(), std::size_t(1));  // 被拒时记录仍在
+
+  // 3) packaged=1 → 5003，且不删除记录
+  lib.find(id)->packaged = true;
+  auto packed = lib.purge_ex(id);
+  SM_CHECK(!packed.ok);
+  SM_CHECK_EQ(packed.error_code, sm::ec::REFERENCED_OBJECT_MISSING);
+  SM_CHECK(packed.message.find("packaged") != std::string::npos);
+  SM_CHECK_EQ(lib.count(), std::size_t(1));
+
+  // 4) 解除打包标记且无引用 → 允许物理删除
+  lib.find(id)->packaged = false;
+  auto ok = lib.purge_ex(id);
+  SM_CHECK(ok.ok);
+  SM_CHECK_EQ(ok.error_code, 0);
+  SM_CHECK_EQ(lib.count(), std::size_t(0));
+}
+
+// ---- §10.3.2 stored_path：入库素材的绝对路径 ----
+void test_stored_path() {
+  MediaLibrary lib;
+  lib.set_copy_cb([](const auto&, const auto&) { return true; });
+  lib.set_probe_cb([](const auto&) { return json{}; });
+  lib.set_thumb_cb([](const auto&, int64_t) { return ""; });
+
+  // 未入库 → 空串
+  SM_CHECK(lib.stored_path("med_none").empty());
+
+  auto res = lib.import_files({"/a.mp4"}, false);
+  std::string id = res["results"][0]["media_id"];
+  auto rec = lib.find(id);
+  SM_CHECK(rec != nullptr);
+  SM_CHECK_EQ(lib.stored_path(id), lib.media_root() + "/" + rec->stored_name);
+
+  // 库根目录被改名后，stored_path 随之改变（供场景召回恢复媒体源）
+  lib.set_media_root("/tmp/showmaster/media2/");
+  SM_CHECK_EQ(lib.stored_path(id),
+              std::string("/tmp/showmaster/media2/") + rec->stored_name);
+}
+
+// ---- §10.1.1 步 1a：存在性校验失败 → 2001 且不入库 ----
+void test_stat_cb_missing_file() {
+  MediaLibrary lib;
+  lib.set_stat_cb([](const auto& path) { return path != "/missing.mp4"; });
+  lib.set_copy_cb([](const auto&, const auto&) { return true; });
+  lib.set_probe_cb([](const auto&) { return json{}; });
+  lib.set_thumb_cb([](const auto&, int64_t) { return ""; });
+
+  auto res = lib.import_files({"/missing.mp4", "/present.mp4"}, false);
+  SM_CHECK_EQ(res["total"], 2);
+
+  // 缺失文件：failed + 2001，且不占用 media_id
+  const auto& bad = res["results"][0];
+  SM_CHECK_EQ(bad["preproc_status"], std::string("failed"));
+  SM_CHECK_EQ(bad["preproc_msg"], std::string("file_missing"));
+  SM_CHECK_EQ(bad["error_code"], sm::ec::FILE_MISSING);
+  SM_CHECK(!bad.contains("media_id"));
+
+  // 存在文件正常入库
+  SM_CHECK_EQ(res["results"][1]["preproc_status"], std::string("done"));
+  SM_CHECK_EQ(lib.count(), std::size_t(1));
+}
+
+// ---- §10.1.1 事件：逐文件 evt.media.import_progress + 整批 evt.media.import_done ----
+void test_import_events() {
+  MediaLibrary lib;
+  std::vector<std::pair<std::string, json>> events;
+  lib.set_event_cb([&](const std::string& evt, const json& payload) {
+    events.emplace_back(evt, payload);
+  });
+  lib.set_copy_cb([](const auto& src, const auto&) {
+    return src.find("bad") == std::string::npos;
+  });
+  lib.set_probe_cb([](const auto&) { return json{}; });
+  lib.set_thumb_cb([](const auto&, int64_t) { return ""; });
+
+  lib.import_files({"/good.mp4", "/bad.mp4"}, false);
+
+  SM_CHECK_EQ(events.size(), std::size_t(3));  // 2 条 progress + 1 条 done
+  SM_CHECK_EQ(events[0].first, std::string("evt.media.import_progress"));
+  SM_CHECK_EQ(events[0].second["index"], 1);
+  SM_CHECK_EQ(events[0].second["total"], 2);
+  SM_CHECK_EQ(events[0].second["status"], std::string("done"));
+
+  SM_CHECK_EQ(events[1].first, std::string("evt.media.import_progress"));
+  SM_CHECK_EQ(events[1].second["index"], 2);
+  SM_CHECK_EQ(events[1].second["status"], std::string("failed"));
+  SM_CHECK_EQ(events[1].second["error_code"], sm::ec::PREPROCESSING);  // 2004
+
+  SM_CHECK_EQ(events[2].first, std::string("evt.media.import_done"));
+  SM_CHECK_EQ(events[2].second["total"], 2);
+  SM_CHECK_EQ(events[2].second["ok_count"], 1);
+  SM_CHECK_EQ(events[2].second["failed_count"], 1);
+  // §5.4 契约载荷 {media_ids:[]}：仅收录成功导入的条目
+  SM_CHECK(events[2].second.contains("media_ids"));
+  SM_CHECK_EQ(events[2].second["media_ids"].size(), std::size_t(1));
+  SM_CHECK_EQ(events[2].second["media_ids"][0], events[0].second["media_id"]);
+}
+
 }  // namespace
 
 int main() {
@@ -237,5 +362,9 @@ int main() {
   test_update_tags();
   test_import_copy_failure();
   test_query_name_filter();
+  test_purge_ex_error_codes();
+  test_stored_path();
+  test_stat_cb_missing_file();
+  test_import_events();
   return smtest::finish("test_media_lib");
 }

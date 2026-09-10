@@ -58,9 +58,17 @@ using GetDurationFn = std::function<int64_t(const std::string& media_path)>;
 // 释放资源
 using CloseFn = std::function<void()>;
 
+// 暂停播放
+using PausePlaybackFn = std::function<void()>;
+// 恢复播放
+using ResumePlaybackFn = std::function<void()>;
+
 // 播放完成回调
 using PlaybackEndedFn = std::function<void(const std::string& item_id,
                                             const std::string& reason)>;
+
+// 事件广播回调（op, evt 名 → payload），由 Kernel 注入总线发布
+using EventFn = std::function<void(const std::string&, const nlohmann::json&)>;
 
 class MediaEngine {
  public:
@@ -71,11 +79,14 @@ class MediaEngine {
   void set_open_cb(OpenMediaFn cb) { open_cb_ = std::move(cb); }
   void set_start_cb(StartPlaybackFn cb) { start_cb_ = std::move(cb); }
   void set_stop_cb(StopPlaybackFn cb) { stop_cb_ = std::move(cb); }
+  void set_pause_cb(PausePlaybackFn cb) { pause_cb_ = std::move(cb); }
+  void set_resume_cb(ResumePlaybackFn cb) { resume_cb_ = std::move(cb); }
   void set_seek_cb(SeekFn cb) { seek_cb_ = std::move(cb); }
   void set_pos_cb(GetPosFn cb) { pos_cb_ = std::move(cb); }
   void set_duration_cb(GetDurationFn cb) { duration_cb_ = std::move(cb); }
   void set_close_cb(CloseFn cb) { close_cb_ = std::move(cb); }
   void set_ended_cb(PlaybackEndedFn cb) { ended_cb_ = std::move(cb); }
+  void set_event_cb(EventFn cb) { event_cb_ = std::move(cb); }
 
   // ---- 条目播放控制（由 M5 TimelineScheduler 调用）----
   // 预载（§10.2.5：条目开始前 20ms 调用）
@@ -86,6 +97,12 @@ class MediaEngine {
             const nlohmann::json& meta);
   // 停止
   void stop(const std::string& item_id);
+  // 暂停（§10.2.4 playing → paused）；非播放态返回 false
+  bool pause();
+  // 恢复（§10.2.4 paused → playing）；非暂停态返回 false
+  bool resume();
+  // 定位（§10.2.4 播放中 seek）；成功下发平台层返回 true
+  bool seek(int64_t pos_ms);
   // 素材预览（§10.2.5 media.preview）
   void preview(const std::string& media_path);
 
@@ -116,17 +133,20 @@ class MediaEngine {
   OpenMediaFn open_cb_;
   StartPlaybackFn start_cb_;
   StopPlaybackFn stop_cb_;
+  PausePlaybackFn pause_cb_;
+  ResumePlaybackFn resume_cb_;
   SeekFn seek_cb_;
   GetPosFn pos_cb_;
   GetDurationFn duration_cb_;
   CloseFn close_cb_;
   PlaybackEndedFn ended_cb_;
+  EventFn event_cb_;
 
   // 从 meta 解析播放配置
   static ItemPlayConfig parse_config(const std::string& media_id,
                                      const nlohmann::json& meta);
-  // 进入 error 状态
-  void enter_error(const std::string& reason);
+  // 进入 error 状态（同时广播 evt.error，code 取 §5.5 错误码）
+  void enter_error(const std::string& reason, int code = 0);
   // 重置到 idle
   void reset_to_idle();
 };

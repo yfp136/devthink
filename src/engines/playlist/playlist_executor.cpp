@@ -80,7 +80,10 @@ void PlaylistExecutor::load(const std::vector<PlaylistItem>& items) {
 void PlaylistExecutor::start() {
   if (state_.load() != ExecState::loaded) return;
   if (items_.empty()) {
-    emit_event("evt.error", {{"code", 5002}, {"message", "playlist empty"}});
+    emit_event("evt.error", {{"code", 5002},
+                             {"msg", "playlist empty"},
+                             {"source", "engine.playlist"},
+                             {"message", "playlist empty"}});
     return;
   }
   state_ = ExecState::running;
@@ -140,14 +143,20 @@ void PlaylistExecutor::execute_current(int64_t now_ms) {
 
   // timecode 在 P1 禁止
   if (item.trigger == TriggerMode::timecode) {
-    emit_event("evt.error", {{"code", 5003}, {"message", "timecode not supported in P1"}});
+    emit_event("evt.error", {{"code", 5003},
+                             {"msg", "timecode not supported in P1"},
+                             {"source", "engine.playlist"},
+                             {"message", "timecode not supported in P1"}});
     advance(now_ms, "skipped_timecode");
     return;
   }
 
   // timeline_segment P1 跳过
   if (item.type == ItemType::timeline_segment) {
-    emit_event("evt.error", {{"code", 5003}, {"message", "timeline_segment not supported in P1"}});
+    emit_event("evt.error", {{"code", 5003},
+                             {"msg", "timeline_segment not supported in P1"},
+                             {"source", "engine.playlist"},
+                             {"message", "timeline_segment not supported in P1"}});
     advance(now_ms, "skipped_segment");
     return;
   }
@@ -191,6 +200,15 @@ void PlaylistExecutor::execute_current(int64_t now_ms) {
     {"item_id", item.item_id},
     {"type", item_type_name(item.type)}
   });
+
+  // §5.4 evt.playlist.playing {playlist_id, index, item_id}：
+  // 当前条目真正进入执行（已起播/已召回/已下发）时上报，
+  // 与 item_ended / advance 构成「起播—结束—推进」三事件闭环。
+  emit_event("evt.playlist.playing", {
+    {"playlist_id", playlist_id_},
+    {"index", current_index_},
+    {"item_id", item.item_id}
+  });
 }
 
 bool PlaylistExecutor::is_current_done(int64_t now_ms) {
@@ -223,8 +241,13 @@ void PlaylistExecutor::advance(int64_t now_ms, const std::string& reason) {
     {"reason", reason}
   });
 
-  // loop_mode=current：当前项结束后循环自身
+  // loop_mode=current：当前项结束后循环自身（索引不变，重发 advance → playing）
   if (loop_mode_ == LoopMode::current) {
+    if (current_index_ >= 0 && current_index_ < int(items_.size()))
+      emit_event("evt.playlist.advance", {
+        {"index", current_index_},
+        {"trigger_mode", trigger_mode_name(items_[current_index_].trigger)}
+      });
     execute_current(now_ms);
     return;
   }
@@ -233,8 +256,13 @@ void PlaylistExecutor::advance(int64_t now_ms, const std::string& reason) {
 
   // 越界 → 检查循环
   if (current_index_ >= int(items_.size())) {
-    if (loop_mode_ == LoopMode::all) {
+    if (loop_mode_ == LoopMode::all && !items_.empty()) {
       current_index_ = 0;
+      // §5.4 evt.playlist.advance：推进目标为循环回首项
+      emit_event("evt.playlist.advance", {
+        {"index", current_index_},
+        {"trigger_mode", trigger_mode_name(items_[current_index_].trigger)}
+      });
       execute_current(now_ms);
     } else {
       state_ = ExecState::ended;
@@ -243,10 +271,15 @@ void PlaylistExecutor::advance(int64_t now_ms, const std::string& reason) {
     return;
   }
 
-  // 检查下一项的 trigger_mode
+  // §5.4 evt.playlist.advance {index, trigger_mode}：推进到下一项，
+  // index 为推进目标下标，trigger_mode 为目标条目的推进模式（供遥控面预告
+  // 下一项是自动走还是等 GO）。
   const auto& next_item = items_[current_index_];
+  emit_event("evt.playlist.advance", {
+    {"index", current_index_},
+    {"trigger_mode", trigger_mode_name(next_item.trigger)}
+  });
   execute_current(now_ms);
-
   // trigger=go：内容执行完后进入 waiting_go
   // 但这里刚执行完 execute_current，需要等内容结束才进 waiting_go
   // （由 tick 在 is_current_done 后检查 trigger_mode）

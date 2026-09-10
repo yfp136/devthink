@@ -46,6 +46,13 @@ public:
   // 获取当前连接数
   int connection_count();
 
+  // 注册连接断开回调（入参 source = "<peer_ip>:<client_id>"）。
+  // 遥控层据此清除该连接上的握手态与在途请求路由：
+  // 断线重连后重新走 remote.hello，不残留半状态（§9.5 W11）。
+  void set_disconnect_callback(std::function<void(const std::string&)> cb) {
+    disconnect_cb_ = std::move(cb);
+  }
+
 private:
   void accept_loop();
   void client_loop(sm::web::socket_t sock, int client_id,
@@ -64,6 +71,8 @@ private:
   };
   std::map<int, Client> clients_;
   int next_client_id_ = 1;
+
+  std::function<void(const std::string&)> disconnect_cb_;
 };
 
 } // namespace proto

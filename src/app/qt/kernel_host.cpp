@@ -72,6 +72,10 @@ void KernelWorker::initKernel() {
 void KernelWorker::shutdownKernel() {
   if (kernel_) {
     kernel_->stop();
+    // 显式摘除本桥的两个 sink，再销毁 Kernel：Kernel 成员析构期间
+    // （~PlaylistExecutor → evt.playlist.ended 广播）不得再回调到桥对象。
+    kernel_->bus().unregister_sink("*");
+    kernel_->bus().unregister_sink(kKernelHostAddr);
     kernel_.reset();
   }
   last_pgm_jpeg_.clear();
@@ -151,9 +155,10 @@ void KernelWorker::playlistNext() {
 void KernelWorker::onHeartbeatTick() {
   if (!kernel_) return;
   const std::int64_t now = sm::now_monotonic_ms();
-  kernel_->heartbeat().tick(now);
-  for (const auto& desc : sm::engine_registry())
-    kernel_->heartbeat().note_heartbeat(desc.id, now);
+  // §5.4：记心跳 + 失联判定 + evt.engine.up/down/heartbeat 生成统一走
+  // Kernel::pump_heartbeat（与 headless 宿主同一入口，判定语义不分叉）。
+  // 桌面桥不注入 load_pct/mem_mb 采样源，按 0 上报（字段保留以稳定契约）。
+  kernel_->pump_heartbeat(now);
   // 心跳推进后推送权威状态快照（2Hz，供状态栏/面板兜底刷新）
   requestStatus();
   // 播放列表快照同步推（完整 items[]；驱动右侧播放列表栏，与状态同频）

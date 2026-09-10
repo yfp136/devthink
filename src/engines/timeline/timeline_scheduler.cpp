@@ -25,6 +25,18 @@ const char* track_type_name(TrackType t) {
   return "unknown";
 }
 
+TrackType track_type_from_string(const std::string& s, TrackType fallback) {
+  if (s == "audio") return TrackType::audio;
+  if (s == "video") return TrackType::video;
+  if (s == "scene") return TrackType::scene;
+  if (s == "command") return TrackType::command;
+  if (s == "vj") return TrackType::vj;
+  if (s == "light") return TrackType::light;
+  if (s == "pixel") return TrackType::pixel;
+  if (s == "device") return TrackType::device;
+  return fallback;
+}
+
 const char* item_state_name(ItemState s) {
   switch (s) {
     case ItemState::scheduled: return "scheduled";
@@ -99,6 +111,52 @@ void TimelineScheduler::configure_tracks(
   recalc_total_duration();
 }
 
+// §7.4 / §5.3：timeline.track_configure 下发轨道配置（含 enabled）。
+// 就地更新已有轨道；索引超出当前轨道数时按需扩展（P1 为固定 8 轨）。
+int TimelineScheduler::configure_tracks(const std::vector<TrackConfig>& tracks) {
+  // 配置整体替换：清空重建，保持 items 为空（工程载入时先 track_configure 再 item_insert）
+  std::vector<Track> rebuilt;
+  int max_index = -1;
+  for (const auto& cfg : tracks) {
+    if (cfg.index < 0) return ec::BAD_PARAM;  // 1002
+    if (cfg.index > max_index) max_index = cfg.index;
+  }
+  rebuilt.resize(size_t(max_index + 1));
+  for (size_t i = 0; i < rebuilt.size(); ++i) {
+    rebuilt[i].index = int(i);
+    rebuilt[i].type = TrackType::audio;
+    rebuilt[i].name = "轨 " + std::to_string(i);
+    rebuilt[i].enabled = false;
+  }
+  for (const auto& cfg : tracks) {
+    Track& t = rebuilt[size_t(cfg.index)];
+    t.index = cfg.index;
+    t.type = cfg.type;
+    t.name = cfg.name;
+    t.enabled = cfg.enabled;
+  }
+
+  // 迁移既有条目（按 track_index 归位；越界条目从索引一并剔除，避免悬空）
+  for (auto it = item_index_.begin(); it != item_index_.end();) {
+    const ItemPtr& item = it->second;
+    if (item->track_index < 0 || item->track_index >= int(rebuilt.size())) {
+      it = item_index_.erase(it);
+      continue;
+    }
+    rebuilt[size_t(item->track_index)].items.push_back(item);
+    ++it;
+  }
+  for (auto& t : rebuilt) {
+    std::sort(t.items.begin(), t.items.end(),
+              [](const ItemPtr& a, const ItemPtr& b) {
+                return a->start_ms < b->start_ms;
+              });
+  }
+  tracks_ = std::move(rebuilt);
+  recalc_total_duration();
+  return ec::OK;
+}
+
 int64_t TimelineScheduler::calc_end_ms(const TimelineItem& item) const {
   if (item.loop <= 0) return item.start_ms + item.duration_ms;
   return item.start_ms + item.duration_ms * (item.loop + 1);
@@ -121,16 +179,37 @@ ItemPtr TimelineScheduler::find_item(const std::string& item_id) const {
   return it->second;
 }
 
+std::vector<ItemPtr> TimelineScheduler::all_items() const {
+  std::vector<ItemPtr> out;
+  out.reserve(item_index_.size());
+  for (const auto& [id, item] : item_index_) out.push_back(item);
+  return out;
+}
+
+void TimelineScheduler::clear_items() {
+  for (auto& tr : tracks_) tr.items.clear();
+  item_index_.clear();
+  total_duration_ms_ = 0;
+  pos_ms_ = 0;
+  state_ = PlayState::stopped;
+}
+
 int TimelineScheduler::insert_item(const TimelineItem& item) {
   if (item.track_index < 0 || item.track_index >= int(tracks_.size()))
     return ec::TRACK_MISSING;  // 3001
+
+  auto& tr = tracks_[item.track_index];
+
+  // §7.4 编辑一致性校验：同轨同起点冲突 → 3002（ITEM_CONFLICT）
+  for (const auto& exist : tr.items) {
+    if (exist->start_ms == item.start_ms) return ec::ITEM_CONFLICT;  // 3002
+  }
 
   auto new_item = std::make_shared<TimelineItem>(item);
   new_item->end_ms = calc_end_ms(item);
   new_item->preload_at_ms =
       std::max(int64_t(0), item.start_ms - kPreloadAheadMs);
 
-  auto& tr = tracks_[item.track_index];
   // 按 start_ms 插入到正确位置
   auto it = std::lower_bound(
       tr.items.begin(), tr.items.end(), item.start_ms,
@@ -223,13 +302,15 @@ void TimelineScheduler::stop() {
   for (const auto& tr : tracks_) {
     for (const auto& it : tr.items) {
       if (it->state == ItemState::active || it->state == ItemState::preloaded) {
+        const bool was_active = (it->state == ItemState::active);
         // 媒体条目回调停止
         if ((tr.type == TrackType::audio || tr.type == TrackType::video) &&
             media_stop_) {
           media_stop_(it->item_id);
         }
         it->state = ItemState::scheduled;
-        emit_item_event("evt.timeline.item_aborted", *it, "stop");
+        // §5.4：已起播的条目终止时以 evt.timeline.item_ended（reason=stop）广播
+        if (was_active) emit_item_event("evt.timeline.item_ended", *it, "stop");
       }
     }
   }
@@ -237,7 +318,12 @@ void TimelineScheduler::stop() {
   pos_ms_ = 0;
 }
 
-void TimelineScheduler::seek(int64_t pos_ms) {
+int TimelineScheduler::seek(int64_t pos_ms) {
+  // §5.5：播放头越界 → 3003（PLAYHEAD_OUT_OF_RANGE）
+  if (pos_ms < 0) return ec::PLAYHEAD_OUT_OF_RANGE;
+  if (total_duration_ms_ > 0 && pos_ms > total_duration_ms_)
+    return ec::PLAYHEAD_OUT_OF_RANGE;
+
   // 停止所有 active 条目
   for (const auto& tr : tracks_) {
     for (const auto& it : tr.items) {
@@ -260,6 +346,7 @@ void TimelineScheduler::seek(int64_t pos_ms) {
     }
   }
   pos_ms_ = pos_ms;
+  return ec::OK;
 }
 
 // ---- 核心 tick ----
@@ -268,6 +355,8 @@ void TimelineScheduler::tick(int64_t pos_ms) {
   pos_ms_ = pos_ms;
 
   for (auto& tr : tracks_) {
+    // §7.4：被禁用的轨道不参与调度
+    if (!tr.enabled) continue;
     for (auto& item : tr.items) {
       // scheduled → preloaded（预载阶段）
       if (item->state == ItemState::scheduled) {
@@ -314,6 +403,7 @@ void TimelineScheduler::tick(int64_t pos_ms) {
   if (pos_ms >= total_duration_ms_ && total_duration_ms_ > 0) {
     bool all_done = true;
     for (const auto& tr : tracks_) {
+      if (!tr.enabled) continue;  // 禁用轨不计入结束判定
       for (const auto& it : tr.items) {
         if (it->state != ItemState::done && it->state != ItemState::cancelled) {
           all_done = false;

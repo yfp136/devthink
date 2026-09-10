@@ -19,7 +19,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -33,6 +37,7 @@
 #endif
 
 #include "engines/kernel.h"
+#include "core/error_codes.h"
 #include "core/msg_bus.h"
 #include "core/op_dict.h"
 #include "engines/engine_registry.h"
@@ -71,6 +76,26 @@ static bool has_flag(int argc, char** argv, const char* flag) {
     if (std::strcmp(argv[i], flag) == 0) return true;
   return false;
 }
+
+// ---- §5.3 指令字典：命名空间 → 引擎 sink 路由 ----
+// transport.* / timeline.* 由 engine.timeline 承接（时间线引擎持有播放头与走带
+// 状态）；media.* → engine.media；scene.* → engine.scene；playlist.* →
+// engine.playlist；sys.* / remote.* → engine.core。未识别命名空间兜底 engine.media，
+// op 本身是否合法由内核按 §5.5 回 1001。
+static std::string route_dst_for(const std::string& op) {
+  const char* ns = sm::op_namespace(op);
+  if (!ns) return "engine.media";
+  const std::string n = ns;
+  if (n == "transport" || n == "timeline") return "engine.timeline";
+  if (n == "scene") return "engine.scene";
+  if (n == "playlist") return "engine.playlist";
+  if (n == "sys" || n == "remote") return "engine.core";
+  return "engine.media";
+}
+
+// §9.5 遥控在途请求路由表上限：仅用于把引擎应答定向回发起方，
+// 超限后淘汰最旧条目，避免长时间运行下无界增长。
+static constexpr std::size_t kReplyRoutesMax = 512;
 
 // ---- 获取自身可执行文件路径 ----
 static std::string get_self_path() {
@@ -113,6 +138,17 @@ static int run_headless(int argc, char** argv) {
   // ---- Kernel 初始化（M1-M5 全部引擎）----
   std::unique_ptr<sm::Kernel> kernel = std::make_unique<sm::Kernel>();
 
+  // §5.4 evt.engine.heartbeat 采样源：mem_mb 取进程驻留集（看门狗已实现平台
+  // 采集）；load_pct 留空 —— Phase 1 无逐引擎 CPU 采样，按 0 上报，字段保留以
+  // 稳定事件契约。Kernel 被重建后采样源需重新注入，故抽成可复用函数。
+  auto apply_engine_metrics = [&watchdog](sm::Kernel& k) {
+    k.set_engine_metrics(nullptr, [&watchdog]() -> std::size_t {
+      // 取看门狗最近一次采样值（3s 一刷，值来自平台 RSS 原语），
+      // 不在心跳路径上重复做系统调用。
+      return watchdog.status().current_rss_mb;
+    });
+  };
+
   // 看门狗重启函数：销毁并重建 Kernel（恢复到干净状态）
   watchdog.set_restart_fn([&]() {
     std::fprintf(stderr, "[watchdog] 重建 Kernel...\n");
@@ -120,22 +156,29 @@ static int run_headless(int argc, char** argv) {
     kernel.reset();
     kernel = std::make_unique<sm::Kernel>();
     kernel->init();
+    apply_engine_metrics(*kernel);
     kernel->start();
+    kernel->log_event("warn", "看门狗触发内核重建完成");
     std::fprintf(stderr, "[watchdog] Kernel 重建完成\n");
   });
 
-  // 告警回调：记录到日志
-  watchdog.set_alert_callback([](sm::remote::AlertType type,
-                                  const std::string& msg) {
+  // 告警回调：写 stderr，并同步为 §5.4 evt.log 上总线（遥控面 [1016] 可同源观测）
+  watchdog.set_alert_callback([&kernel](sm::remote::AlertType type,
+                                       const std::string& msg) {
     const char* type_str = "";
+    const char* level = "warn";
     switch (type) {
       case sm::remote::AlertType::HeartbeatTimeout:     type_str = "HEARTBEAT_TIMEOUT"; break;
       case sm::remote::AlertType::MemoryExceeded:      type_str = "MEM_EXCEEDED"; break;
       case sm::remote::AlertType::ThreadCountExceeded:  type_str = "THREAD_EXCEEDED"; break;
-      case sm::remote::AlertType::DeadlockDetected:     type_str = "DEADLOCK"; break;
+      case sm::remote::AlertType::DeadlockDetected:     type_str = "DEADLOCK"; level = "error"; break;
       case sm::remote::AlertType::ServiceRestarted:     type_str = "RESTARTED"; break;
     }
     std::fprintf(stderr, "[watchdog][%s] %s\n", type_str, msg.c_str());
+    // 看门狗线程回调：Kernel 重建与本回调同在该线程串行执行，无并发重建
+    if (kernel)
+      kernel->log_event(
+          level, std::string("[watchdog][") + type_str + "] " + msg);
   });
 
   // 向 SCM 报告 RUNNING
@@ -146,7 +189,10 @@ static int run_headless(int argc, char** argv) {
 
   // 初始化 Kernel
   kernel->init();
+  apply_engine_metrics(*kernel);
   kernel->start();
+  // §5.4 evt.log：启动完成后留一条 info 级日志（遥控面可观测启动里程碑）
+  kernel->log_event("info", "M1-M5 引擎全部在线");
 
   std::printf("[kernel] M1-M5 引擎全部在线\n");
   std::printf("[kernel]   M1 素材库 / M2 媒体引擎 / M3 场景快照\n");
@@ -203,34 +249,150 @@ static int run_headless(int argc, char** argv) {
 
   gateway.register_routes(server);
 
-  // 注册总线事件 → WebSocket 广播
-  kernel->bus().register_sink("*", [&](const sm::Envelope& e) {
-    std::string evt = sm::envelope_to_json(e);
-    gateway.on_engine_event(evt);
-  });
-
   // ---- 硬件协议适配器（TCP / OSC）----
   // 接收外部设备指令 → 投递到消息总线
   sm::proto::TcpAdapter tcp_adapter;
   tcp_adapter.set_listen_port(port + 1000);  // TCP 端口 = Web端口 + 1000
 
-  tcp_adapter.set_callback([&](const sm::proto::ProtocolMessage& msg) {
-    // 将 TCP 指令转换为总线命令
-    nlohmann::json params = nlohmann::json::object();
-    if (!msg.payload.empty() && msg.payload.front() == '{')
-      params = nlohmann::json::parse(msg.payload, nullptr, false);
+  // ---- §9.5 遥控协议 v1 会话态（仅 TCP 遥控通道）----
+  // [1014] 握手门禁：每连接记 handshaken，握手前不收任何控制命令；
+  // [1015] 控制面白名单：is_remote_control_op 之外的 op 一律回 1002；
+  // [1016] 观测面转发：见下方 "*" sink，转发给所有已连接遥控端；
+  // [1018] 遥控线程只做「解析 → 投递总线 → 回写应答」，禁止引擎调用，
+  //        引擎侧产生的 rsp/err/evt 均由总线 sink 在各自线程承接。
+  // 会话键 = ProtocolMessage.source = "<peer_ip>:<client_id>"。
+  struct RemoteSession {
+    bool handshaken = false;
+  };
+  std::mutex remotes_mu;
+  std::map<std::string, RemoteSession> remotes;
+  // 在途请求 id → 会话键：引擎回的 rsp/err（dst = "proto.tcp"）据此定向回发起方
+  std::map<std::string, std::string> reply_routes;
+  std::deque<std::string> reply_route_fifo;
 
-    std::string dst = "engine.media";
-    const char* ns = sm::op_namespace(msg.address);
-    if (ns) {
-      std::string n = ns;
-      if (n == "media" || n == "transport") dst = "engine.media";
-      else if (n == "timeline") dst = "engine.timeline";
-      else if (n == "scene") dst = "engine.scene";
-      else if (n == "playlist") dst = "engine.playlist";
+  // 登记在途请求，便于把应答定向回发起连接（超限淘汰最旧）
+  auto remember_reply_route = [&](const std::string& req_id,
+                                  const std::string& remote_key) {
+    std::lock_guard<std::mutex> lk(remotes_mu);
+    if (reply_routes.emplace(req_id, remote_key).second)
+      reply_route_fifo.push_back(req_id);
+    while (reply_route_fifo.size() > kReplyRoutesMax) {
+      reply_routes.erase(reply_route_fifo.front());
+      reply_route_fifo.pop_front();
+    }
+  };
+
+  // 会话键 → TCP 适配器认识的 client_id（取最后一个 ':' 之后的部分）
+  auto remote_client_id = [](const std::string& remote_key) {
+    const std::size_t colon = remote_key.rfind(':');
+    return colon == std::string::npos ? remote_key
+                                      : remote_key.substr(colon + 1);
+  };
+
+  // 拒绝遥控请求：以 err(1002) 应答，语义见 §9.5 [1014]/[1015] 与 §5.5
+  auto reject_remote = [&](const std::string& remote_key, const std::string& op,
+                           const nlohmann::json& params,
+                           const std::string& reason) {
+    sm::Envelope req = sm::make_cmd("proto.tcp", route_dst_for(op), op, params);
+    remember_reply_route(req.id, remote_key);
+    kernel->bus().post(
+        sm::make_reply(req, sm::ec::BAD_PARAM, {{"message", reason}}));
+  };
+
+  // 注册总线事件 → WebSocket 广播 + §9.5 [1016] 遥控观测面转发
+  kernel->bus().register_sink("*", [&](const sm::Envelope& e) {
+    const std::string evt = sm::envelope_to_json(e);
+    gateway.on_engine_event(evt);
+
+    // [1016] 观测面：evt.transport.state、evt.playlist.*、evt.scene.recalled、
+    // evt.error 转发给所有已连接遥控端（广播地址 "-1"）。
+    if (e.type != "evt") return;
+    if (!(e.op == "evt.transport.state" || e.op == "evt.scene.recalled" ||
+          e.op == "evt.error" ||
+          e.op.compare(0, 13, "evt.playlist.") == 0))
+      return;
+    tcp_adapter.send("-1", evt);
+  });
+
+  // 引擎应答（rsp/err，dst = "proto.tcp"）定向回发起命令的遥控端。
+  // 注：广播事件 dst = "*"，会派发到全部 sink，故此处按 type 过滤。
+  kernel->bus().register_sink("proto.tcp", [&](const sm::Envelope& e) {
+    if (e.type != "rsp" && e.type != "err") return;
+    std::string remote_key;
+    {
+      std::lock_guard<std::mutex> lk(remotes_mu);
+      auto it = reply_routes.find(e.ref_id);
+      if (it == reply_routes.end()) return;
+      remote_key = it->second;
+      reply_routes.erase(it);
+    }
+    tcp_adapter.send(remote_client_id(remote_key), sm::envelope_to_json(e));
+  });
+
+  // 断线清理：清除该连接的握手态与在途请求路由 → 重连必须重新握手，
+  // 不残留半状态（§9.5 [1014] / WP-W11）。
+  tcp_adapter.set_disconnect_callback([&](const std::string& source) {
+    std::lock_guard<std::mutex> lk(remotes_mu);
+    remotes.erase(source);
+    for (auto it = reply_routes.begin(); it != reply_routes.end();) {
+      if (it->second == source)
+        it = reply_routes.erase(it);
+      else
+        ++it;
+    }
+  });
+
+  tcp_adapter.set_callback([&](const sm::proto::ProtocolMessage& msg) {
+    const std::string remote_key = msg.source;
+
+    // 解析遥控信封，支持两种线上格式：
+    //   1) 整行 JSON：{"op":"transport.play","params":{...}}（address == "json"）
+    //   2) 文本行：<op> {params}
+    std::string op = msg.address;
+    nlohmann::json params = nlohmann::json::object();
+    if (msg.address == "json") {
+      const nlohmann::json j =
+          nlohmann::json::parse(msg.payload, nullptr, false);
+      if (!j.is_object() || !j.contains("op") || !j["op"].is_string()) {
+        reject_remote(remote_key, "json", params,
+                      "遥控信封须为 {\"op\":...,\"params\":{...}} 形式（§9.5 "
+                      "[1013]）");
+        return;
+      }
+      op = j["op"].get<std::string>();
+      if (j.contains("params") && j["params"].is_object()) params = j["params"];
+    } else if (!msg.payload.empty() && msg.payload.front() == '{') {
+      params = nlohmann::json::parse(msg.payload, nullptr, false);
+      if (params.is_null()) params = nlohmann::json::object();
     }
 
-    sm::Envelope env = sm::make_cmd("proto.tcp", dst, msg.address, params);
+    // ---- [1014] 握手门禁 + [1015] 控制面白名单 ----
+    bool reject = false;
+    std::string reason;
+    {
+      std::lock_guard<std::mutex> lk(remotes_mu);
+      RemoteSession& session = remotes[remote_key];
+      if (op == "remote.hello") {
+        session.handshaken = true;  // 握手完成，后续控制命令放行
+      } else if (!session.handshaken) {
+        reject = true;
+        reason =
+            "握手前不收任何控制命令（§9.5 [1014]）：请先发 remote.hello";
+      } else if (!sm::is_remote_control_op(op)) {
+        reject = true;
+        reason =
+            "op 不在遥控控制面白名单（§9.5 [1015]）：允许 transport.*、"
+            "playlist.*、scene.recall、sys.set_volume、sys.ping";
+      }
+    }
+    if (reject) {
+      reject_remote(remote_key, op, params, reason);
+      return;
+    }
+
+    // §5.3 指令字典：按命名空间路由到对应引擎 sink
+    sm::Envelope env = sm::make_cmd("proto.tcp", route_dst_for(op), op, params);
+    remember_reply_route(env.id, remote_key);
     kernel->bus().post(env);
   });
 
@@ -329,28 +491,20 @@ static int run_headless(int argc, char** argv) {
                                                      nullptr, false);
       if (params.is_null()) params = nlohmann::json::object();
 
-      // 根据 op 命名空间决定 dst
-      std::string dst = "engine.media";
-      const char* ns = sm::op_namespace(cmd.op);
-      if (ns) {
-        std::string n = ns;
-        if (n == "media" || n == "transport") dst = "engine.media";
-        else if (n == "timeline") dst = "engine.timeline";
-        else if (n == "scene") dst = "engine.scene";
-        else if (n == "playlist") dst = "engine.playlist";
-        else if (n == "sys") dst = "engine.ui";
-      }
-
-      sm::Envelope env = sm::make_cmd(cmd.src, dst, cmd.op, params);
+      // Web 远控走独立鉴权通道（Auth），不受 §9.5 [1015] TCP 遥控白名单约束；
+      // 仅按 §5.3 指令字典的命名空间路由到对应引擎 sink。
+      sm::Envelope env =
+          sm::make_cmd(cmd.src, route_dst_for(cmd.op), cmd.op, params);
       kernel->bus().post(env);
     });
 
-    // 心跳 tick（每 2 秒）
+    // 心跳 tick（每 2 秒）：统一走 Kernel::pump_heartbeat —— 记心跳 + 推进失联
+    // 判定，并由内核按「边沿变化」产出 §5.4 evt.engine.up / evt.engine.down /
+    // evt.engine.heartbeat。heartbeat() 监视器本身不产出事件，若直接调用
+    // tick/note_heartbeat，headless 宿主将永远不会广播这三类事件（W1 缺口）。
     auto now = std::time(nullptr);
     if (now - last_tick >= 2) {
-      kernel->heartbeat().tick(now * 1000);
-      for (const auto& desc : sm::engine_registry())
-        kernel->heartbeat().note_heartbeat(desc.id, now * 1000);
+      kernel->pump_heartbeat(now * 1000);
       last_tick = now;
     }
 
@@ -379,6 +533,8 @@ static int run_headless(int argc, char** argv) {
 
   // ---- 清理 ----
   std::printf("\n[shutdown] 停止引擎...\n");
+  // §5.4 evt.log：停机意图先上总线，遥控面可见「服务正在退出」而非静默断连
+  kernel->log_event("info", "收到退出信号，开始停机");
   sm::remote::report_service_state(sm::remote::ServiceState::StopPending);
   osc_adapter.stop();
   tcp_adapter.stop();

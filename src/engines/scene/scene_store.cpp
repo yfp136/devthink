@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "core/util.h"
+#include "project/state_json.h"
 
 namespace sm {
 namespace scene {
@@ -61,6 +62,17 @@ bool SceneStore::recall(const std::string& scene_id, int fade_ms_override,
 
   auto& snap = it->second;
 
+  // §10.4：召回前做 state_json 语义校验。
+  // sv 高于当前支持版本、结构非法 → 拒绝召回（调用方回 5001 并提示升级软件）。
+  {
+    StateJsonResult vr = validate_state_json(snap->state_json);
+    if (!vr.ok) {
+      std::fprintf(stdout, "[scene] 召回被拒: scene_id=%s 原因=%s\n",
+                   scene_id.c_str(), vr.message.c_str());
+      return false;
+    }
+  }
+
   // fade_ms 优先级：参数 > 快照 > 默认 0
   int fade = (fade_ms_override >= 0) ? fade_ms_override : snap->fade_ms;
   std::string mode = recall_mode_override.empty() ? snap->recall_mode
@@ -74,6 +86,15 @@ bool SceneStore::recall(const std::string& scene_id, int fade_ms_override,
 
   if (apply_state_)
     apply_state_(snap->state_json, fade, mode);
+
+  // §10.3.2：状态全部应用完成后发 evt.scene.recalled（含 applied_at_ms）。
+  // 由本层统一发出，保证总线召回、F1-F4 快捷键、节目单触发三条路径行为一致。
+  if (recalled_) {
+    int64_t applied_at = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+    recalled_(snap->scene_id, fade, applied_at);
+  }
 
   return true;
 }

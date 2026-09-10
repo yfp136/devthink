@@ -4,31 +4,56 @@ namespace sm {
 
 // ---- MsgBus ----
 void MsgBus::register_sink(const std::string& dst, Sink sink) {
+  std::lock_guard<std::mutex> lk(mu_);
   sinks_[dst] = std::move(sink);
 }
 
-void MsgBus::set_default_sink(Sink sink) { default_ = std::move(sink); }
+bool MsgBus::unregister_sink(const std::string& dst) {
+  std::lock_guard<std::mutex> lk(mu_);
+  return sinks_.erase(dst) > 0;
+}
+
+void MsgBus::set_default_sink(Sink sink) {
+  std::lock_guard<std::mutex> lk(mu_);
+  default_ = std::move(sink);
+}
+
+void MsgBus::clear_sinks() {
+  std::lock_guard<std::mutex> lk(mu_);
+  sinks_.clear();
+  default_ = nullptr;
+}
 
 void MsgBus::post(const Envelope& e) {
-  ring_.push_back(e);
-  ++posted_;
+  // 1) 锁内：记录 + 解析目标（快照需要调用的 sink 副本）
+  Sink fallback;            // 广播时=default_；精确未命中时=default_
+  std::vector<Sink> targets;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    ring_.push_back(e);
+    ++posted_;
 
-  if (e.dst == "*") {
-    for (const auto& kv : sinks_) {
-      if (kv.second) kv.second(e);
+    if (e.dst == "*") {
+      targets.reserve(sinks_.size());
+      for (const auto& kv : sinks_)
+        if (kv.second) targets.push_back(kv.second);
+      fallback = default_;
+    } else {
+      auto it = sinks_.find(e.dst);
+      if (it != sinks_.end() && it->second)
+        targets.push_back(it->second);
+      else
+        fallback = default_;
     }
-    if (default_) default_(e);
-    return;
   }
-  auto it = sinks_.find(e.dst);
-  if (it != sinks_.end() && it->second) {
-    it->second(e);
-  } else if (default_) {
-    default_(e);
-  }
+
+  // 2) 锁外调用：sink 内部可能再次 post（引擎回 rsp），不能持有互斥量
+  for (const auto& s : targets) s(e);
+  if (fallback) fallback(e);
 }
 
 std::vector<Envelope> MsgBus::recent(std::size_t n) const {
+  std::lock_guard<std::mutex> lk(mu_);
   std::vector<Envelope> out;
   const std::size_t start = ring_.size() > n ? ring_.size() - n : 0;
   for (std::size_t i = start; i < ring_.size(); ++i) out.push_back(ring_[i]);

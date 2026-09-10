@@ -40,6 +40,9 @@ using ApplyStateFn = std::function<void(const std::string& state_json,
 using CaptureThumbFn = std::function<std::string()>;
 // 获取当前运行态（返回 state_json 文本）
 using GetCurrentStateFn = std::function<std::string()>;
+// 召回完成回调（§10.3.2：状态应用完毕后发 evt.scene.recalled，携 applied_at_ms）
+using RecalledFn = std::function<void(const std::string& scene_id, int fade_ms,
+                                      int64_t applied_at_ms)>;
 
 class SceneStore {
  public:
@@ -49,6 +52,7 @@ class SceneStore {
   void set_apply_state_cb(ApplyStateFn cb) { apply_state_ = std::move(cb); }
   void set_capture_thumb_cb(CaptureThumbFn cb) { capture_thumb_ = std::move(cb); }
   void set_get_current_state_cb(GetCurrentStateFn cb) { get_current_state_ = std::move(cb); }
+  void set_recalled_cb(RecalledFn cb) { recalled_ = std::move(cb); }
 
   // ---- scene.save ----
   // 保存当前状态为快照。返回 scene_id（失败返回空）。
@@ -81,6 +85,7 @@ class SceneStore {
   ApplyStateFn apply_state_;
   CaptureThumbFn capture_thumb_;
   GetCurrentStateFn get_current_state_;
+  RecalledFn recalled_;
 
   std::string gen_id() const;
 };

@@ -166,6 +166,92 @@ void test_save_empty_name_rejected() {
   SM_CHECK_EQ(store.count(), std::size_t(0));
 }
 
+// ---- §10.3 [1173]：state_json 语义非法 → 召回拒绝 ----
+// sv 高于当前支持版本、必填子树缺失、顶层非对象，均须拒绝召回并提示升级软件。
+void test_recall_rejects_unsupported_state() {
+  SceneStore store;
+  int applied = 0;
+  store.set_apply_state_cb([&](const auto&, int, const auto&) { ++applied; });
+  store.set_recalled_cb([&](const auto&, int, int64_t) {});
+
+  const char* valid =
+      R"({"sv":1,"scope":["media","master"],"master":{"gain_db":0,"mute":false},"media":{"source":{"type":"none"},"pos_ms":0,"playing":false},"devices":[]})";
+
+  // 1) sv=999（高于支持版本 1）→ 拒绝；场景本身仍保留在库内
+  store.set_get_current_state_cb([]() {
+    return R"({"sv":999,"scope":["media","master"],"master":{"gain_db":0,"mute":false},"media":{"source":{"type":"none"},"pos_ms":0,"playing":false},"devices":[]})";
+  });
+  std::string future = store.save("未来版本场景", "", 0, "cut");
+  SM_CHECK(!future.empty());
+  SM_CHECK(!store.recall(future));
+  SM_CHECK_EQ(applied, 0);
+  SM_CHECK_EQ(store.count(), std::size_t(1));
+
+  // 2) 缺 sv → 拒绝
+  store.set_get_current_state_cb([]() { return std::string(R"({"scope":[]})"); });
+  std::string no_sv = store.save("缺版本场景", "", 0, "cut");
+  SM_CHECK(!no_sv.empty());
+  SM_CHECK(!store.recall(no_sv));
+  SM_CHECK_EQ(applied, 0);
+
+  // 3) 顶层非对象 → 拒绝
+  store.set_get_current_state_cb([]() { return std::string("[1,2,3]"); });
+  std::string arr = store.save("非对象场景", "", 0, "cut");
+  SM_CHECK(!arr.empty());
+  SM_CHECK(!store.recall(arr));
+  SM_CHECK_EQ(applied, 0);
+
+  // 4) 对照组：合法 sv=1 → 正常召回并应用
+  store.set_get_current_state_cb([valid]() { return std::string(valid); });
+  std::string ok = store.save("正常场景", "", 0, "cut");
+  SM_CHECK(store.recall(ok));
+  SM_CHECK_EQ(applied, 1);
+}
+
+// ---- §10.3.2：状态应用完成后回调携 {scene_id, fade_ms, applied_at_ms} ----
+void test_recalled_callback_payload() {
+  SceneStore store;
+  std::string cb_scene;
+  int cb_fade = -1;
+  int64_t cb_at = 0;
+  int cb_count = 0;
+
+  store.set_get_current_state_cb([]() {
+    return R"({"sv":1,"scope":["media","master"],"master":{"gain_db":0,"mute":false},"media":{"source":{"type":"none"},"pos_ms":0,"playing":false},"devices":[]})";
+  });
+  store.set_apply_state_cb([](const auto&, int, const auto&) {});
+  store.set_recalled_cb([&](const std::string& id, int fade, int64_t at) {
+    ++cb_count;
+    cb_scene = id;
+    cb_fade = fade;
+    cb_at = at;
+  });
+
+  // fade_ms 覆盖生效并写入事件载荷
+  std::string id = store.save("事件场景", "", 300, "fade");
+  SM_CHECK(!id.empty());
+  SM_CHECK(store.recall(id, 800));
+  SM_CHECK_EQ(cb_count, 1);
+  SM_CHECK_EQ(cb_scene, id);
+  SM_CHECK_EQ(cb_fade, 800);
+  SM_CHECK(cb_at > 0);  // applied_at_ms 必须为真实时间戳
+
+  // 失败路径（场景不存在）不得发事件
+  cb_count = 0;
+  SM_CHECK(!store.recall("nonexistent_id"));
+  SM_CHECK_EQ(cb_count, 0);
+
+  // 被拒绝的 state_json 同样不得发事件
+  store.set_get_current_state_cb([]() {
+    return R"({"sv":999,"scope":["media","master"],"master":{"gain_db":0,"mute":false},"media":{"source":{"type":"none"},"pos_ms":0,"playing":false},"devices":[]})";
+  });
+  std::string bad = store.save("坏版本场景", "", 0, "cut");
+  SM_CHECK(!bad.empty());
+  cb_count = 0;
+  SM_CHECK(!store.recall(bad));
+  SM_CHECK_EQ(cb_count, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -178,5 +264,7 @@ int main() {
   test_list();
   test_multiple_saves();
   test_save_empty_name_rejected();
+  test_recall_rejects_unsupported_state();
+  test_recalled_callback_payload();
   return smtest::finish("test_scene");
 }

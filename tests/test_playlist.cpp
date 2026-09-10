@@ -303,12 +303,19 @@ void test_stop() {
 void test_empty_playlist() {
   PlaylistExecutor exec;
   bool got_error = false;
+  bool payload_ok = false;
   exec.set_event_cb([&](const std::string& evt, const json& p) {
-    if (evt == "evt.error" && p.value("code", 0) == 5002) got_error = true;
+    if (evt != "evt.error" || p.value("code", 0) != 5002) return;
+    got_error = true;
+    // §5.4 evt.error 契约载荷 {code, msg, source}
+    payload_ok = p.contains("msg") && p.contains("source") &&
+                 p.value("source", std::string()) == "engine.playlist" &&
+                 !p.value("msg", std::string()).empty();
   });
   exec.load({});
   exec.start();
   SM_CHECK(got_error);
+  SM_CHECK(payload_ok);
   SM_CHECK(exec.state() == ExecState::loaded);  // 未变 running
 }
 

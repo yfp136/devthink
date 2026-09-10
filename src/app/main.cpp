@@ -38,7 +38,20 @@ void check_dict_and_codes() {
   using namespace sm;
   std::printf("[1/5] 指令/事件字典与错误码\n");
   expect(cmd_ops().size() == 33, "指令字典共 33 条（§5.3）");
-  expect(evt_ops().size() == 17, "事件字典共 17 条（§5.4）");
+  // 事件分两层：evt_ops_spec() = §5.4 表核心集（16 行，engine.up/down 拆条 ⇒ 17）；
+  // evt_ops() = 核心集 + 实现增补集 5 条（§11.4.1 文档同源登记）⇒ 22。
+  expect(evt_ops_spec().size() == 17, "规格事件核心集共 17 条（§5.4）");
+  expect(evt_ops().size() == 22, "实现事件全集共 22 条（§5.4 + 实现增补）");
+  expect(is_evt_op("evt.playlist.playing") && is_evt_op("evt.transport.bpm") &&
+             is_evt_op("evt.engine.heartbeat") && is_evt_op("evt.log"),
+         "§5.4 新增事件 op 可识别");
+  // §9.5 [1015] 白名单：放行遥控控制面，拒绝其余
+  expect(is_remote_control_op("transport.play") && is_remote_control_op("playlist.next") &&
+             is_remote_control_op("scene.recall") && is_remote_control_op("sys.ping"),
+         "遥控白名单放行控制面 op");
+  expect(!is_remote_control_op("sys.shutdown") && !is_remote_control_op("media.import") &&
+             !is_remote_control_op("scene.save"),
+         "遥控白名单拒绝非控制面 op");
   expect(is_cmd_op("media.play") && is_cmd_op("sys.ping"), "典型指令 op 可识别");
   expect(is_evt_op("evt.engine.up") && is_evt_op("evt.error"), "典型事件 op 可识别");
   expect(op_namespace("timeline.load") != nullptr, "op 命名空间可反查");

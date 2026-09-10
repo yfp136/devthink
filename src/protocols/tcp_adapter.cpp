@@ -140,6 +140,11 @@ void TcpAdapter::client_loop(sm::web::socket_t sock, int client_id,
   }
   sm::web::close_socket(sock);
   std::printf("[tcp] 客户端 #%d 断开\n", client_id);
+
+  // 通知上层清除该连接的会话态（握手态 / 在途请求路由），
+  // 使断线重连不残留半状态（§9.5 [1014] / W11）。
+  if (disconnect_cb_)
+    disconnect_cb_(peer_ip + ":" + std::to_string(client_id));
 }
 
 bool TcpAdapter::send(const std::string& address,

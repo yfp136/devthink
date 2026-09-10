@@ -114,11 +114,17 @@ class PlaylistExecutor {
   void set_loop_mode(LoopMode mode) { loop_mode_ = mode; }
   LoopMode loop_mode() const { return loop_mode_; }
 
+  // §5.4 evt.playlist.playing 载荷含 playlist_id。M4 本身不持库，
+  // 节目单标识由宿主在 playlist.load 时注入（缺省空串表示匿名节目单）。
+  void set_playlist_id(const std::string& id) { playlist_id_ = id; }
+  const std::string& playlist_id() const { return playlist_id_; }
+
  private:
   std::vector<PlaylistItem> items_;
   std::atomic<ExecState> state_{ExecState::idle};
   int current_index_ = -1;
   LoopMode loop_mode_ = LoopMode::none;
+  std::string playlist_id_;
 
   // delay 条目等待
   int64_t delay_start_ms_ = 0;
