@@ -22,9 +22,9 @@
 //   面板调用发送一律经 root.post()，禁止直接散落 postCommand。
 // =============================================================================
 
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Window 2.15
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Window
 import "panels"   // C2–C6 面板（目录导入：TopBar/StatusBar/TimelineDock 等即类型名）
 
 ApplicationWindow {

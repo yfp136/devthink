@@ -6,9 +6,9 @@
 // 快捷方法（transportPlay/Pause/Resume/Stop、playlistGo），无总线往返。
 // =============================================================================
 
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 import "../UiStyle.js" as UiStyle   // 共享样式/工具（.pragma library 引擎级单例）
 
 Rectangle {

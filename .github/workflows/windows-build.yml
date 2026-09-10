@@ -222,6 +222,20 @@ jobs:
           $qwindows = "build\windows-msvc-release\platforms\qwindows.dll"
           if (-not (Test-Path $qwindows)) { throw "platform plugin not deployed: $qwindows" }
           Write-Host "Deployed Qt platform plugin: $qwindows"
+          # QML 模块目录同样必须存在：--smoke 退出 1（无根对象）的头号根因就是
+          # QML 模块未随产物部署。此处只断言「目录存在且非空」这一无歧义条件，
+          # 并把实际部署清单打印出来，便于与 Main.qml/panels 的 import 清单比对。
+          $qmlRoot = "build\windows-msvc-release\qml"
+          if (-not (Test-Path $qmlRoot)) {
+            Write-Host "::error::windeployqt deployed no qml/ directory next to sm_desktop.exe"
+            throw "QML modules not deployed: $qmlRoot is missing"
+          }
+          $qmlDirs = @(Get-ChildItem $qmlRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object)
+          if ($qmlDirs.Count -eq 0) {
+            Write-Host "::error::qml/ directory deployed but empty: $qmlRoot"
+            throw "QML modules not deployed: $qmlRoot is empty"
+          }
+          Write-Host "Deployed QML top-level modules ($($qmlDirs.Count)): $($qmlDirs -join ', ')"
 
       - name: Smoke test sm_desktop (--smoke, expect exit code 0)
         shell: pwsh
@@ -232,8 +246,18 @@ jobs:
           # kernelReady/statusChanged 真实执行）后以 0 退出；期间崩溃则非 0。
           #
           # 诊断通道：本仓库 job 日志接口对外 403（需 admin），外部只能读
-          # annotation，故此处把进程 stdout/stderr 落盘；失败时以 ::error::
-          # 回显诊断行，成功时以 ::notice:: 汇报实际生效的渲染后端。
+          # annotation，故此处把进程日志落盘；失败时以 ::error:: 回显诊断行，
+          # 成功时以 ::notice:: 汇报实际生效的渲染后端。
+          #
+          # 关键坑（本轮失败的真因）：sm_desktop 以 WIN32_EXECUTABLE TRUE
+          # （Windows GUI 子系统）构建，Qt 在无控制台进程中默认把日志交给
+          # OutputDebugString，stdout/stderr 恒为空 —— 上一轮 4 个后端全部
+          # 退出 1 却一行报错都抓不到，就是此因。三重保险：
+          #   1) QT_ASSUME_STDERR_HAS_CONSOLE=1（Qt6；Qt5 为
+          #      QT_LOGGING_TO_CONSOLE=1）强制 Qt 写 stderr；
+          #   2) SM_QT_LOG=<路径>：程序内置消息处理器把全部日志追加落盘
+          #      （见 src/app/main_qt.cpp），不依赖 shell 重定向；
+          #   3) *>&1 合并重定向 + Tee-Object 仍保留（CUI 场景下继续有效）。
           #
           # 渲染后端逐级回退：CI runner 无 GPU，Qt Quick 的默认 RHI(D3D11 硬件)
           # 可能取不到设备。Qt 官方文档给出的两级软件化开关依次是
@@ -244,10 +268,16 @@ jobs:
           $exe = "build\windows-msvc-release\sm_desktop.exe"
           if (-not (Test-Path $exe)) { throw "sm_desktop.exe not found: $exe" }
           $log = Join-Path $env:RUNNER_TEMP "sm_desktop_smoke.log"
-          Remove-Item $log -ErrorAction SilentlyContinue
+          $qtLog = Join-Path $env:RUNNER_TEMP "sm_desktop_qt.log"
+          Remove-Item $log, $qtLog -ErrorAction SilentlyContinue
 
           $prev = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'   # 原生命令写 stderr 不当作终止错误
+
+          # 三项与「是否降级渲染后端」无关，故设为常驻（不纳入下面的 managed 清理）。
+          $env:QT_ASSUME_STDERR_HAS_CONSOLE = '1'
+          $env:QT_LOGGING_TO_CONSOLE = '1'
+          $env:SM_QT_LOG = $qtLog
 
           $managed = @('QSG_RHI_PREFER_SOFTWARE_RENDERER', 'QT_QUICK_BACKEND', 'QT_QPA_PLATFORM')
           $attempts = @(
@@ -270,12 +300,29 @@ jobs:
           }
           $ErrorActionPreference = $prev
 
+          # 并入程序自写日志：GUI 子系统下这是唯一不依赖 shell 重定向的取证途径。
+          if (Test-Path $qtLog) {
+            "=== Qt message log (SM_QT_LOG) ===" | Out-File -FilePath $log -Append -Encoding utf8
+            Get-Content $qtLog | Out-File -FilePath $log -Append -Encoding utf8
+            Write-Host "captured $((Get-Content $qtLog).Count) Qt message line(s) via SM_QT_LOG"
+          } else {
+            Write-Host "WARNING: SM_QT_LOG file not created - process died before Qt init"
+          }
+
           if ($code -ne 0) {
             $lines = @(Get-Content $log)
+            # 优先挑 QML 装载类根因行（"module ... is not installed"、
+            # "qrc:/qml/...:N:M: ..."、"failed to load component"），命中为空
+            # 再退回通用关键字，最后退回尾部若干行。
             $diag = @($lines | Where-Object {
-              $_ -match '(?i)qml|warning|error|failed|abort|crash|not found|no such|platform|module|import'
+              $_ -match '(?i)is not installed|failed to load|qrc:/|\.qml:\d|qml module|unexpected token|SyntaxError|Syntax error'
             } | Select-Object -Unique | Select-Object -First 20)
-            if ($diag.Count -eq 0) { $diag = @($lines | Select-Object -Last 20) }
+            if ($diag.Count -eq 0) {
+              $diag = @($lines | Where-Object {
+                $_ -match '(?i)warning|critical|error|fatal|abort|crash|no such|cannot|not found'
+              } | Select-Object -Unique | Select-Object -First 20)
+            }
+            if ($diag.Count -eq 0) { $diag = @($lines | Select-Object -Unique | Select-Object -Last 20) }
             $msg = ($diag -join ' || ')
             if ($msg.Length -gt 4000) { $msg = $msg.Substring(0, 4000) }
             Write-Host "::error::sm_desktop --smoke failed (exit $code; tried default/WARP/software/offscreen): $msg"

@@ -1,8 +1,10 @@
 // UiController 实现（P1-1-D），参见 ui_controller.h 装配说明。
 #include "app/qt/ui_controller.h"
 
+#include <QFile>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QStringList>
 #include <QUrl>
 
 namespace sm::desktop {
@@ -12,6 +14,16 @@ UiController::UiController(QObject* parent) : QObject(parent) {}
 UiController::~UiController() = default;
 
 int UiController::show() {
+  // 0) 装配前置自检：把「qrc 资源是否已链接进二进制」与「QML 模块搜索路径」
+  //    写入日志。--smoke 退出 1 时，这两项足以区分两类根因：
+  //    present=false → qml.qrc 未被 AUTORCC 链接（构建期问题）；
+  //    present=true 且 import paths 缺少安装目录 → 运行期 QML 模块未部署
+  //    （windeployqt 问题），随后加载器会打印 "module ... is not installed"。
+  qInfo().noquote() << "UiController: qrc:/qml/Main.qml present ="
+                    << QFile::exists(QStringLiteral(":/qml/Main.qml"));
+  qInfo().noquote() << "UiController: QML import paths ="
+                    << engine_.importPathList().join(QStringLiteral(";"));
+
   // 1) 注入内核桥上下文属性。QML 侧经 kernelBridge 直接调用（下行）
   //    与信号连接（上行），面板缺失注入时仅告警不崩溃（独立预览态）。
   engine_.rootContext()->setContextProperty(QStringLiteral("kernelBridge"),

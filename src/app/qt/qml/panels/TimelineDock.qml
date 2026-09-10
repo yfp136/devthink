@@ -18,8 +18,8 @@
 //     有内核后以 timeline.tracks 回复为准刷新轨头。
 // =============================================================================
 
-import QtQuick 2.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Controls
 import "../UiStyle.js" as UiStyle   // 共享样式/工具（.pragma library 引擎级单例）
 
 Rectangle {

@@ -6,8 +6,8 @@
 // notify(text, level) 由 Main.qml 分发总线提示：level 0=信息 1=警告 2=错误。
 // =============================================================================
 
-import QtQuick 2.15
-import QtQuick.Layouts 1.15
+import QtQuick
+import QtQuick.Layouts
 import "../UiStyle.js" as UiStyle   // 共享样式/工具（.pragma library 引擎级单例）
 
 Rectangle {

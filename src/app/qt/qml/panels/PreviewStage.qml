@@ -11,8 +11,8 @@
 //   onEvent(op,env) 消费 evt.timeline.item_* 更新当前节目名行。
 // =============================================================================
 
-import QtQuick 2.15
-import QtQuick.Controls 2.15
+import QtQuick
+import QtQuick.Controls
 import "../UiStyle.js" as UiStyle   // 共享样式/工具（.pragma library 引擎级单例）
 
 Rectangle {
