@@ -102,23 +102,23 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # desktop job（路径 A：P1-1 sm_desktop 的 CI 冒烟覆盖）
-  # 覆盖出口项 E2/E3：vcpkg Qt 6.7 → SM_BUILD_DESKTOP=ON → Release 构建
-  # → windeployqt 部署 → sm_desktop --smoke 启动自检（退出码 0 = 通过）。
-  # 与上方 build job 相互独立：不共享 vcpkg 安装树，各自全新 runner。
-  # 首次运行 vcpkg 需从源码编译 Qt6（qtbase+qtdeclarative），耗时较长，
-  # 故 timeout 放宽到 120 分钟；命令形态与 docs/BUILD_WINDOWS.md §7 完全一致。
+  # desktop job（P1-1 sm_desktop 的 CI 冒烟覆盖）
+  # 覆盖出口项 E2/E3：Qt 6.7（docs/BUILD_WINDOWS.md §7.1 方式 A：官方预编译二进制）
+  # → SM_BUILD_DESKTOP=ON → Release 构建 → windeployqt 部署
+  # → sm_desktop --smoke 启动自检（退出码 0 = 通过）。
+  # 与上方 build job 相互独立：各自全新 runner。
+  # 注：早期版本用方式 B（vcpkg 从源码编译 qtbase+qtdeclarative），在 windows-latest
+  # （2 vCPU、磁盘很小）上需 >2 小时，最终仍把磁盘写满而失败
+  # （"There is not enough space on the disk"）。改用方式 A 后数分钟装好，
+  # 兼顾速度与稳定性；sqlite3 仍走 vcpkg（秒级、可命中二进制缓存）。
   # ---------------------------------------------------------------------------
   desktop:
     runs-on: windows-latest
-    # 首次（缓存未命中）需从源码编译 qtbase+qtdeclarative+qtquickcontrols2：
-    # windows-latest 2 vCPU 实测可达 ~130 分钟，120 不够，放宽到 180；
-    # 缓存命中后整个 job 只需 ~15 分钟。
-    timeout-minutes: 180
+    # Qt 走方式 A（预编译二进制，数分钟装好）；vcpkg 只装 sqlite3（秒级）。
+    # 60 分钟对「下载 Qt + 构建 sm_desktop + windeployqt + 冒烟」留有充裕余量。
+    timeout-minutes: 60
     env:
-      # 桌面 job 只用 Release 产物（windows-msvc-release preset），故让 vcpkg 只编 release，
-      # 磁盘占用与编译时间直接减半——否则 dbg+rel 双配置会把 GitHub runner 磁盘耗尽
-      # （曾于 qtdeclarative-dbg 阶段报 no space on device）。
+      # sqlite3 走 vcpkg 时只编 release，省时省磁盘。
       # 注意：VCPKG_DEFAULT_BINARY_CACHE 未放这里——runner context 在 job 级 env 不可用，
       # 只能在 step 级 env/with 里用 ${{ runner.temp }}（否则整个 workflow 解析报错、0 job）。
       VCPKG_BUILD_TYPE: release
@@ -126,7 +126,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # vcpkg 二进制缓存：key 固定前缀+手动版本号（v1）；Qt 三件套是主要受益者。
+      # vcpkg 二进制缓存：现在只缓存 sqlite3（Qt 改走官方预编译二进制，不再源码编译）。
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
@@ -135,24 +135,32 @@ jobs:
           restore-keys: |
             vcpkg-cache-desktop-${{ runner.os }}-
 
-      - name: Install Qt6 + sqlite3 (vcpkg, x64-windows)
+      # sm_core 在 Windows 依赖 sqlite3（find_package(SQLite3)）；仅此一项走 vcpkg。
+      - name: Install sqlite3 (vcpkg, x64-windows)
         shell: pwsh
         env:
-          # vcpkg 二进制缓存目录：Qt6 (qtbase/qtdeclarative/qtquickcontrols2) 从源码编译
-          # 需 ~1.5h，缓存命中后降到数分钟；在 step 级设置（job 级 env 拿不到 runner context）。
+          # cache miss 时该目录尚不存在，而 vcpkg 要求它必须是已存在目录。
           VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
         run: |
-          # cache miss 时该目录尚不存在，而 vcpkg 要求它必须是已存在目录。
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          # sm_core 在 Windows 依赖 sqlite3（find_package(SQLite3)）；
-          # Qt 组件见 docs/BUILD_WINDOWS.md §7.1 方式 B：
-          #   qtbase（Core/Gui）qtdeclarative（Qml/Quick）qtquickcontrols2（QuickControls2）
-          # --clean-buildtrees-after-build：每包编完即清 buildtrees，进一步压低磁盘峰值
-          # （保留 downloads，避免 msys2 工具链反复重下）。
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
-            sqlite3:x64-windows qtbase:x64-windows `
-            qtdeclarative:x64-windows qtquickcontrols2:x64-windows `
-            --clean-buildtrees-after-build
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sqlite3:x64-windows `
+            --clean-after-build
+
+      # Qt 6.7 采用 docs/BUILD_WINDOWS.md §7.1 方式 A（官方预编译二进制，推荐）。
+      # 架构取 win64_msvc2019_64：aqt 对 Qt 6.7.2 只提供 msvc2019/msvc2019_arm64/
+      # mingw/llvm_mingw，并无 msvc2022 版；而 MSVC 2019 与 2022 二进制兼容
+      # （同为 v14x ABI），故可在 VS2022 下直接链接使用——这也是 install-qt-action
+      # 对 5.15<=Qt<6.8 的默认架构。
+      # 不写 modules：qtdeclarative（Qml/Quick/QuickControls2）与 qtsvg/qttools/
+      # qttranslations 均属该版本的默认 base 归档，一次装齐，无需（也无法）作为
+      # 可选 module 再指定——恰为 CMakeLists.txt find_package(Qt6 6.7 ...) 所需组件。
+      # 该 action 会把 Qt 解压到 runner.workspace，并导出 QT_ROOT_DIR、注入 PATH。
+      - name: Install Qt6 (prebuilt via aqt, docs §7.1 方式 A)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          arch: 'win64_msvc2019_64'
+          cache: true
 
       - name: Enable MSVC x64 environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -162,8 +170,11 @@ jobs:
       - name: Configure (windows-msvc-release preset, SM_BUILD_DESKTOP=ON)
         shell: pwsh
         run: |
+          # CMAKE_PREFIX_PATH 指向 aqt 安装的 Qt（方式 A 下 find_package(Qt6) 的查找依据）；
+          # CMAKE_TOOLCHAIN_FILE 仍必须保留——sqlite3 来自 vcpkg。
           cmake --preset windows-msvc-release `
             -DSM_BUILD_DESKTOP=ON `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
 
       - name: Build sm_desktop
@@ -173,20 +184,21 @@ jobs:
       - name: Deploy Qt runtime (windeployqt --qmldir)
         shell: pwsh
         run: |
-          # vcpkg 安装 Qt6 后 windeployqt 位于 installed\x64-windows\tools\Qt6\bin；
-          # 若布局有变则全树兜底搜索一次，找不到即失败（依赖缺失须显式暴露）。
-          $candidate = Join-Path `
-            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\tools\Qt6\bin" `
-            "windeployqt.exe"
-          $deploy = if (Test-Path $candidate) { $candidate } else {
-            Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" `
-              -Recurse -Filter windeployqt.exe |
+          # 方式 A：windeployqt 位于 aqt 安装的 Qt 的 bin 目录；
+          # 布局若有变则在该 Qt 树下兜底搜索一次，找不到即失败（依赖缺失须显式暴露）。
+          $deploy = Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe"
+          if (-not (Test-Path $deploy)) {
+            $deploy = Get-ChildItem $env:QT_ROOT_DIR -Recurse -Filter windeployqt.exe |
               Select-Object -First 1 -ExpandProperty FullName
           }
-          if (-not $deploy) { throw "windeployqt.exe not found under vcpkg installed tree" }
+          if (-not $deploy) { throw "windeployqt.exe not found under $env:QT_ROOT_DIR" }
           Write-Host "windeployqt: $deploy"
           & $deploy "--qmldir" "src\app\qt\qml" "build\windows-msvc-release\sm_desktop.exe"
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE" }
+          # Windows 平台插件必须部署到位，否则 --smoke 无法启动；显式断言以暴露缺件。
+          $qwindows = "build\windows-msvc-release\platforms\qwindows.dll"
+          if (-not (Test-Path $qwindows)) { throw "platform plugin not deployed: $qwindows" }
+          Write-Host "Deployed Qt platform plugin: $qwindows"
 
       - name: Smoke test sm_desktop (--smoke, expect exit code 0)
         shell: pwsh
@@ -202,11 +214,13 @@ jobs:
           }
           Write-Host "Desktop smoke test passed: sm_desktop --smoke exited 0"
 
-      - name: Upload desktop artifact (sm_desktop + deployed Qt DLLs)
+      - name: Upload desktop artifact (sm_desktop + deployed Qt runtime)
         uses: actions/upload-artifact@v4
         with:
           name: showmaster-win-desktop-qt
+          # 连同 windeployqt 部署的 Qt 运行库（含 platforms/、qml/ 等子目录），
+          # 使产物开箱即可运行。
           path: |
             build/windows-msvc-release/sm_desktop.exe
-            build/windows-msvc-release/*.dll
+            build/windows-msvc-release/**/*.dll
           if-no-files-found: error

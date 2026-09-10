@@ -116,18 +116,23 @@ http://<服务器IP>:8080
 ## 6. CI（GitHub Actions）
 
 推送/PR 自动在 `windows-latest` 上执行 `.github/workflows/windows-build.yml`，
-含两个相互独立的并行 job（各自全新 runner、独立 vcpkg 安装树）：
+含两个相互独立的并行 job（各自全新 runner）：
 
 - `build`（原流程）：vcpkg 安装 sqlite3 + ffmpeg → MSVC 环境 → cmake
   （`windows-msvc-debug`）→ ctest → headless 冒烟测试
   （start → `/api/login` 换 token → `/api/status`）→ 上传内核与引擎 DLL 产物。
-- `desktop`（2026-09-10 新增，P1-1 冒烟覆盖，对应出口项 E2/E3）：vcpkg 安装
-  Qt6（`qtbase`/`qtdeclarative`/`qtquickcontrols2`，同 §7.1 方式 B）→
-  `-DSM_BUILD_DESKTOP=ON` + `windows-msvc-release` 配置 → 构建 `sm_desktop`
+- `desktop`（2026-09-10 新增，P1-1 冒烟覆盖，对应出口项 E2/E3）：按 §7.1 **方式 A**
+  安装 Qt 6.7（aqt 官方预编译二进制，架构 `win64_msvc2019_64`，其默认归档已含
+  `Qml`/`Quick`/`QuickControls2`），sqlite3 仍由 vcpkg 提供 → `-DSM_BUILD_DESKTOP=ON`
+  + `windows-msvc-release` 配置
+  （`-DCMAKE_PREFIX_PATH=<Qt 根目录>`）→ 构建 `sm_desktop`
   → `windeployqt --qmldir src\app\qt\qml` 部署 → `sm_desktop --smoke` 启动自检
   （退出码 0 = QML 装配 + 首轮事件冒烟通过；非 0 = 装配失败或事件循环期崩溃，
-  语义见 `src/app/main_qt.cpp`）→ 上传桌面产物。首次运行 vcpkg 需从源码编译
-  Qt，耗时较长，job `timeout-minutes` 放宽到 120。
+  语义见 `src/app/main_qt.cpp`）→ 上传桌面产物（含部署好的 Qt 运行库）。
+  > 历史：最初用 §7.1 方式 B（vcpkg 从源码编译 qtbase+qtdeclarative）实现该 job，
+  > 但在 `windows-latest`（2 vCPU、磁盘很小）上编译 >2 小时仍把磁盘写满而失败
+  > （`There is not enough space on the disk`）。故改用方式 A：数分钟即可装好，
+  > 速度快且稳定；job `timeout-minutes` 相应回落到 60。
 
 ## 7. Qt 桌面端 sm_desktop（P1-1）构建与部署
 
@@ -142,11 +147,18 @@ QML 资源在 `src/app/qt/qml/`（`qml.qrc`，前缀 `/qml`，AUTORCC 打包）�
 
 ```bat
 pip install aqtinstall
-aqt install-qt windows desktop 6.7.2 win64_msvc2022_64 -m qtdeclarative qtquickcontrols2
+aqt install-qt windows desktop 6.7.2 win64_msvc2019_64
 ```
 
-`qtbase` 默认安装（含 `Qt6::Core/Gui`）；`-m qtdeclarative` 提供 `Qt6::Qml/Quick`；
-`-m qtquickcontrols2` 提供 `Qt6::QuickControls2`（Qt 6 中 Qt Quick Controls 2 的模块名）。
+该架构的默认归档已涵盖 CMake 所需全部组件，无需再 `-m` 指定模块：
+`qtbase` 提供 `Qt6::Core/Gui`，`qtdeclarative` 提供 `Qt6::Qml/Quick/QuickControls2`
+（Qt 6 中 Qt Quick Controls 2 并入 qtdeclarative），另有 `qtsvg`/`qttools`/`qttranslations`。
+
+> 为什么是 `win64_msvc2019_64` 而不是 `msvc2022`：aqt 对 Qt 6.7.2 只发布
+> `win64_msvc2019_64`、`win64_msvc2019_arm64`、`win64_mingw`、`win64_llvm_mingw`，
+> 并无 `win64_msvc2022_64`（该架构自 Qt 6.8 起才提供）。MSVC 2019 与 2022
+> 二进制兼容（同为 v14x ABI），在 VS 2022 下可直接链接使用——这也是
+> `install-qt-action` 对 `5.15 <= Qt < 6.8` 的默认架构。
 
 方式 B：vcpkg（与既有 sqlite3/ffmpeg 管线一致，但需从源码编译 Qt，耗时较长）
 
@@ -165,7 +177,8 @@ cmake --preset windows-msvc-debug ^
 cmake --build --preset windows-msvc-debug --target sm_desktop
 ```
 
-方式 A（aqt）安装时不需要 toolchain 文件；若用 vcpkg 安装 Qt 则需要该行。
+方式 A（aqt）安装时 Qt 自身不需要 toolchain 文件，改为 `-DCMAKE_PREFIX_PATH=<aqt 安装的 Qt 根目录>`；
+但 sqlite3 由 vcpkg 提供，故 `-DCMAKE_TOOLCHAIN_FILE` 这行仍需保留。CI 的 `desktop` job 即此组合。
 
 ### 7.3 部署与冒烟
 
