@@ -784,7 +784,11 @@ Rectangle {
     FileDialog {
         id: importDialog
         title: "导入素材"
-        selectMultiple: true
+        // Qt6 的 QtQuick.Dialogs.FileDialog 已移除 selectMultiple，
+        // 多选改由 fileMode 枚举表达（Qt5 遗留写法运行期报
+        // Cannot assign to non-existent property "selectMultiple"，
+        // 使整个 MediaLibraryPanel 类型不可用）。
+        fileMode: FileDialog.OpenFiles
         nameFilters: ["媒体文件 (*.mp4 *.mov *.mkv *.m4v *.webm *.mp3 *.wav *.flac *.aac *.ogg *.jpg *.jpeg *.png *.webp *.gif *.srt *.ass *.vtt)", "所有文件 (*)"]
         onAccepted: {
             var urls = selectedFiles;

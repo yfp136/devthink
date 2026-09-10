@@ -10,6 +10,7 @@
 #include <QGuiApplication>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QQuickStyle>
 #include <QStringLiteral>
 #include <QTimer>
 #include <QtGlobal>
@@ -90,6 +91,17 @@ int main(int argc, char* argv[]) {
   app.setApplicationName(QStringLiteral("ShowMaster"));
   app.setOrganizationName(QStringLiteral("ShowMaster"));
   app.setApplicationVersion(QStringLiteral("0.1.0"));
+
+  // 控件风格固定为 Basic（P1-1-D 视觉一致性）
+  // ---------------------------------------------------------------------------
+  // Qt Quick Controls 的默认风格在 Windows/macOS 上是「原生风格」，而原生风格
+  // 明确拒绝 background/contentItem 等自定义项，运行期对每个控件刷出
+  // "The current style does not support customization of this control"，
+  // 结果是 Main.qml 及各面板精心定义的深色导播主题被系统默认外观覆盖。
+  // 固定为 Basic 后自定义项全部生效；Basic 随 Qt 官方安装包一同提供，
+  // windeployqt 会一并部署 QtQuick/Controls/Basic。
+  // （必须在 QML 加载之前调用，故置于 UiController::show() 之前。）
+  QQuickStyle::setStyle(QStringLiteral("Basic"));
 
   // --smoke：自检/CI 冒烟模式（出口项 E3 的自动化断言）。语义分层：
   //   · ctrl.show() != 0 —— QML 主窗口装配失败（qrc:/qml/Main.qml 解析、
