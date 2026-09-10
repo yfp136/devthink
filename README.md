@@ -24,7 +24,7 @@ Windows 专属能力（WASAPI / D3D11 / FFmpeg / Qt）在后续阶段按本骨�
 ```sh
 cmake --preset debug
 cmake --build --preset debug
-ctest --preset debug          # 预期 22/22 全绿
+ctest --preset debug          # 预期 23/23 全绿
 ```
 
 ## 构建（Windows）

@@ -24,7 +24,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_windows_media.ps1
    （CMake 原文为 `FFmpeg found — enabling real media backend`，其中破折号是 U+2014，在非
    UTF-8 控制台代码页下会被替换成 `?`；脚本只匹配 ASCII 子串以免门禁静默失效）；
    出现 `stub media backend` 即失败退出；
-3. `cmake --build` + `ctest`，期望 **22/22 通过**（媒体真实分支随 sm_engines 一并编译链接）；
+3. `cmake --build` + `ctest`，期望 **23/23 通过**（媒体真实分支随 sm_engines 一并编译链接）；
 4. 启动 `sm_headless.exe --port 8099` → **先 `POST /api/login`（admin/admin123）换会话
    token，再带 `Authorization: Bearer <token>` 请求 `GET /api/status`，必须 200（硬门槛）**；
    裸请求 `/api/status` 会 401（鉴权见 `src/web/web_gateway.cpp` 的 `check_auth`）。
@@ -65,7 +65,7 @@ CI/Session 0/无声卡环境无默认音频端点，`wasapi_available=false` →
 | --- | --- |
 | configure 日志 `stub media backend` | vcpkg 未提供 ffmpeg 或 toolchain 未生效 → 检查 `VCPKG_ROOT` 与 `vcpkg install ffmpeg:x64-windows` |
 | 编译错（真实分支内） | 类型/API 与 MSVC/FFmpeg 头不匹配 → 以 MSVC 报错为准修正 |
-| `ctest` 非 22/22 | 媒体/引擎回归 → 先看 `--output-on-failure` 明细 |
+| `ctest` 非 23/23 | 媒体/引擎回归 → 先看 `--output-on-failure` 明细 |
 | HTTP `/api/status` 非 200 | 服务未起/端口占用 → 查 stderr 日志 |
 | 启动未见 `[audio]` 行 | 脚本把 stdout 重定向到文件 → CRT 全缓冲；启动横幅总量远小于 4KB 缓冲，且进程由 `Stop-Process -Force` 终止（不触发 flush），故该行基本不会落盘。**这是预期现象，不代表端点不可用**：要判 `[audio]` 就在终端前台直接运行（不重定向）；服务健康一律以 HTTP 200 为准 |
 | 启动见 `[audio] 音频端点不可用` | 当前会话无默认渲染端点（CI/Session 0/无声卡）→ 属预期，换交互桌面会话复测 |
@@ -74,7 +74,7 @@ CI/Session 0/无声卡环境无默认音频端点，`wasapi_available=false` →
 ## 5. 完成标准（DoD）
 
 - [ ] configure 日志出现 `FFmpeg found`（完整原文 `FFmpeg found — enabling real media backend`）
-- [ ] `ctest` 22/22 全绿
+- [ ] `ctest` 23/23 全绿
 - [ ] headless `GET /api/status` 200（须带 `/api/login` 换来的 Bearer token）
 - [ ] 交互桌面启动日志含 `[audio] WASAPI 默认渲染端点可用`
 - [ ] 真实媒体可听播放通过，重复 open/start/stop/close 无句柄增长、无崩溃

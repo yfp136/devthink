@@ -46,9 +46,9 @@ ctest --preset debug
 
 Windows：在 "x64 Native Tools Command Prompt for VS 2022" 中执行 `cmake --preset windows-msvc-debug -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake`，随后 `--build` 与 `ctest` 同 preset；vcpkg 提供 `sqlite3` 与 `ffmpeg`。`find_package(FFMPEG)` 成功时定义 `SM_HAS_FFMPEG=1`，平台层走真实实现；找不到 FFmpeg 时自动降级为 stub。
 
-当前实测：本机（macOS）`ctest` **22/22 全绿**，这是目前唯一可在本机复现的绿灯基线；`README.md`、`docs/BUILD_WINDOWS.md`、`docs/VERIFY_WINDOWS_MEDIA.md` 中的计数均已同步为 22/22。
+当前实测：本机（macOS）`ctest` **23/23 全绿**，这是目前唯一可在本机复现的绿灯基线；`README.md`、`docs/BUILD_WINDOWS.md`、`docs/VERIFY_WINDOWS_MEDIA.md` 中的计数均已同步为 23/23。
 
-Windows CI（`.github/workflows/windows-build.yml`）含两个 job：`build`（vcpkg `sqlite3`+`ffmpeg` → MSVC debug → `ctest` 22/22 → headless 冒烟登录）与 `desktop`（aqt 预编译 Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release → `windeployqt --qmldir` 部署 platforms/qml → `sm_desktop --smoke` 退出码断言）。**2026-09-10 实测：run #34434959091（commit `97760ad`）两个 job 全绿**；后续绿灯状态请以 GitHub Actions 页面为准 —— 本机无 Qt/vcpkg 环境，无法本地复现 `desktop` job。
+Windows CI（`.github/workflows/windows-build.yml`）含两个 job：`build`（vcpkg `sqlite3`+`ffmpeg` → MSVC debug → `ctest` 23/23 → headless 冒烟登录）与 `desktop`（aqt 预编译 Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release → `windeployqt --qmldir` 部署 platforms/qml → `sm_desktop --smoke` 退出码断言）。**2026-09-10 实测：run #34434959091（commit `97760ad`）两个 job 全绿**；后续绿灯状态请以 GitHub Actions 页面为准 —— 本机无 Qt/vcpkg 环境，无法本地复现 `desktop` job。
 
 构建纪律（全仓强制）：MSVC 用 `/W4 /permissive-`，其他平台 `-Wall -Wextra`，新代码必须零告警；测试全绿才算完成。
 
@@ -74,11 +74,11 @@ Windows CI（`.github/workflows/windows-build.yml`）含两个 job：`build`（v
 
 ### 4.3 `rhi/`（渲染抽象层与 D3D11 后端）
 
-- 接口 `src/platform/rhi/rhi.h`：`PixelFormat` / `BlendOp` / `BlendConfig`（`enable`/`op`/`opacity`/`mask_key`）/ `Texture2DDesc`、`ITexture`（`upload`/`readback`/`native_handle`）、`IPgmMixer`（`kMaxLayers=4`，`compose`/`compose_and_readback`）、`IDevice`。
+- 接口 `src/platform/rhi/rhi.h`：`PixelFormat` / `BlendOp` / `BlendConfig`（`enable`/`op`/`opacity`/`mask_key`）/ `Texture2DDesc`、`ITexture`（`upload`/`readback`/`native_handle`）、`IPgmMixer`（`kMaxLayers=4`，`compose`/`compose_and_readback`）、`IDevice`，以及 P1-2 新增的输出窗口契约：`NdcRect` + `compute_ndc_rect()`（合成与窗口输出共用的等比居中/拉伸几何，纯头文件内联）、`OutputWindowDesc` + `is_valid_output_window_desc()`（`kMaxOutputDimension = 16384`）、`IOutputSurface`（`is_open`/`width`/`height`/`resize`/`present`/`native_handle`）、`IDevice::create_output_surface()`。RHI 只消费调用方传入的窗口句柄，自身不创建窗口、不跑消息循环。
 - 工厂 `src/platform/rhi/rhi.cpp`：`create_device()` 在 `_WIN32 && SM_HAS_D3D11` 时返回 D3D11 设备，否则返回 `nullptr`（“无渲染上下文”语义，调用方据此返回空串）。
-- 后端 `src/platform/rhi/rhi_d3d11.cpp`（+ `.h`）：离屏设备（HW→WARP 回退，**无交换链**）；`UpdateSubresource` 上传；离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应。
+- 后端 `src/platform/rhi/rhi_d3d11.cpp`（+ `.h`）：双模式 ——（1）**离屏**设备（HW→WARP 回退），`UpdateSubresource` 上传，离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；（2）**本地窗口输出**（P1-2 落地）——在调用方 HWND 上创建 DXGI 交换链（`CreateSwapChainForHwnd`，`FLIP_DISCARD`/2 buffer 失败自动回退 `DISCARD`/1 buffer；`MakeWindowAssociation(DXGI_MWA_NO_ALT_ENTER)` 保证不改动调用方窗口，`OCCLUDED` 视为成功、设备丢失关闭输出面，`resize` 重建后缓冲且失败时按旧尺寸尽力恢复），`present` 以 vsync 收尾（1080p60 视口 → 60 Hz 上限），创建失败返回 `nullptr` 由调用方降级为“仅离屏 + 预监”。两条路径共用同一 `draw_texture_quad` + `compute_ndc_rect`，故预监与输出视口像素一致。混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应。
 - 构建接线：顶层 `CMakeLists.txt` 的 `file(GLOB ...)` 已纳入 `src/platform/rhi/*.cpp`；`if(WIN32)` 下 `sm_engines` PUBLIC 链接 `d3d11 dxgi d3dcompiler`、PRIVATE 定义 `SM_HAS_D3D11=1`（与 `SM_HAS_FFMPEG` 同模式；Windows SDK 自带这三个 lib，无需 `find_package`）。
-- 已知边界：无交换链，故单视口本地窗口输出（1080p60）尚未落地，依赖 P1-1 的窗口句柄；vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3）。
+- 已知边界：窗口输出交换链代码已就位，但**尚无调用方接线** —— `sm_desktop`（P1-1）尚未把 Qt 窗口句柄交给 `create_output_surface()`，故 1080p60 输出视口仍待 P1-1/P1-2 接线后做 Windows 实机验收；headless/CI 无显示环境下 `create_output_surface()` 返回 `nullptr`，调用方降级为“仅离屏 + 预监”属预期行为。vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3）。
 
 ### 4.4 实时预监（PGM）链路
 
@@ -102,3 +102,4 @@ Windows CI（`.github/workflows/windows-build.yml`）含两个 job：`build`（v
 ## 6. 文档卫生记录
 
 - 2026-09-10（H-1 / H-2）：核对确认 `README.md`、`docs/BUILD_WINDOWS.md`、`docs/VERIFY_WINDOWS_MEDIA.md` 的 ctest 计数均已为 22/22，无需再改。本文档 §4 按源码重写，作废此前两处过期论断 ——「全仓无 `SM_HAS_D3D11`、无 `d3d11.h`/`dxgi.h` 使用、无 d3d11/dxgi 链接，D3D11 渲染输出属未开始」与「没有调用方驱动 `capture_pgm_frame_jpeg`」；并移除 §3 中已过时的「最近一次全绿 run 基于 commit e21c17b」（其后已有 16 个提交，含 P1-1 桌面端与 CI `desktop` job）。
+- 2026-09-10（P1-2 输出窗口）：新增 `test_rhi_geometry`（`compute_ndc_rect` 几何 + `is_valid_output_window_desc` 校验），测试总数 22 → **23**，故全仓 ctest 计数由 `22/22` 统一改为 `23/23`（`README.md`、`docs/BUILD_WINDOWS.md`、`docs/VERIFY_WINDOWS_MEDIA.md`、`docs/TASKS_REMAINING.md` 与本文档 §3）。同时作废 §4.3 中「**无交换链**」与「单视口本地窗口输出（1080p60）尚未落地」两处过期论断 —— D3D11 后端已实现 DXGI 交换链窗口输出，剩余缺口仅为 `sm_desktop` 侧的调用接线。

@@ -55,3 +55,7 @@ sm_add_unit_test(test_osc sm_protocols)
 
 # 自包含 JPEG 编码器（RGB24 → baseline JFIF，标记/尺寸/确定性校验）
 sm_add_unit_test(test_jpeg_codec sm_engines)
+
+# RHI 输出几何 + 窗口描述校验（P1-2：compute_ndc_rect / is_valid_output_window_desc，
+# 纯逻辑可跨平台验证；D3D11 交换链本身只在 Windows CI 覆盖）
+sm_add_unit_test(test_rhi_geometry sm_engines)

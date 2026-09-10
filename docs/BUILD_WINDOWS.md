@@ -43,7 +43,7 @@ ctest --preset windows-msvc-debug
 
 Release 同理：把三个命令中的 `windows-msvc-debug` 换成 `windows-msvc-release`。
 
-预期结果：`ctest` 输出 **22/22 通过**。
+预期结果：`ctest` 输出 **23/23 通过**。
 DoD 规则（规格 4.2）：ctest 全绿方可视为本里程碑完成。
 
 ## 4. 产物与目录约定

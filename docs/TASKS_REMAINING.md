@@ -1,6 +1,6 @@
 # ShowMaster 剩余任务清单
 
-基线：2026-09-10（本机 HEAD `b129c81`；上一提交 `97760ad`）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest 22/22 → headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。本机（macOS）侧 `ctest` 22/22 全绿（stub 分支，无 Qt）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
+基线：2026-09-10（本机 HEAD `b129c81`；上一提交 `97760ad`）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest 22/22（该 run 时点的测试总数）→ headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。本机（macOS）侧 `ctest` **23/23** 全绿（stub 分支，无 Qt；P1-2 新增 `test_rhi_geometry` 后测试总数由 22 增至 23，全仓计数同步为 `23/23`）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
 
 ## 1. 总体结论
 
@@ -31,14 +31,15 @@
 
 ### P1-2 D3D11 渲染与帧通道（规格书 M2 10.2.3 / 第 2.3 章 RHI）
 
-- 现状：离屏渲染与帧通道部分完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest 22/22 通过；Windows 真分支（`_WIN32 && SM_HAS_D3D11`）已由 CI `build` job 编译并 ctest 22/22 通过 —— run #34434959091）。
-  - 新增 RHI 抽象层 `src/platform/rhi/rhi.h`：`PixelFormat`/`BlendOp`/`BlendConfig`/`Texture2DDesc`、`ITexture`（upload/readback/native_handle）、`IPgmMixer`（`kMaxLayers=4` 层混合 + `compose`/`compose_and_readback`）、`IDevice`（`create_device()` 工厂）。
-  - D3D11 后端 `src/platform/rhi/rhi_d3d11.cpp`：离屏设备（HW→WARP 回退，无交换链）；纹理 `UpdateSubresource` 上传；离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应。非 Windows/未启用 `SM_HAS_D3D11` 时提供返回 `nullptr` 的 stub。
+- 现状：离屏渲染 + 帧通道 + **输出窗口（DXGI 交换链）** 部分完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest **23/23** 通过；Windows 真分支（`_WIN32 && SM_HAS_D3D11`）最近一次 CI 绿灯为 `build` job 在 commit `97760ad`（ctest 22/22，早于本轮输出窗口改动）—— 本轮 P1-2 的 D3D11 代码尚未经 CI 编译，须以推送后的 `build` job 结果为准）。
+  - 新增 RHI 抽象层 `src/platform/rhi/rhi.h`：`PixelFormat`/`BlendOp`/`BlendConfig`/`Texture2DDesc`、`ITexture`（upload/readback/native_handle）、`IPgmMixer`（`kMaxLayers=4` 层混合 + `compose`/`compose_and_readback`）、`IDevice`（`create_device()` 工厂）；P1-2 另增输出窗口契约 `NdcRect`/`compute_ndc_rect()`（合成与窗口输出共用的等比居中/拉伸几何）、`OutputWindowDesc`/`is_valid_output_window_desc()`、`IOutputSurface`/`IDevice::create_output_surface()`。
+  - D3D11 后端 `src/platform/rhi/rhi_d3d11.cpp`：离屏设备（HW→WARP 回退）+ **本地窗口输出**（调用方 HWND 上建 DXGI 交换链；`FLIP_DISCARD`→`DISCARD` 自动回退、`OCCLUDED` 视为成功、设备丢失关面、`resize` 重建后缓冲且失败时按旧尺寸尽力恢复、vsync 收尾节流至刷新率）；纹理 `UpdateSubresource` 上传；离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应（与窗口输出共用同一几何函数与顶点缓冲）。非 Windows/未启用 `SM_HAS_D3D11` 时提供返回 `nullptr` 的 stub。
   - `CMakeLists.txt`：glob 纳入 `src/platform/rhi/*.cpp`；`if(WIN32)` 下 `sm_engines` PUBLIC 链接 `d3d11 dxgi d3dcompiler`、PRIVATE 定义 `SM_HAS_D3D11=1`（同 `SM_HAS_FFMPEG` 模式）。
   - `media_backend.cpp`：`capture_pgm_frame_jpeg()` 改为经渲染路径——无渲染上下文时返回空串，有上下文时最新解码帧上传 layer0 → 4 层合成 → 回读 → JPEG-Base64（对齐 `media_backend.h` 头注释语义）。
-- 剩余缺口：**单视口本地窗口输出（1080p60）未实现** —— 需在 RHI 增加「输出窗口 + DXGI 交换链」能力并接到 PGM 合成结果（P1-2 收尾项，当前正在推进）；vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3 范畴）。
-- 依赖：P1-1 窗口交换链（仅窗口输出部分）。
-- DoD（离屏部分已达成）：4 层混合可用；`capture_pgm_frame_jpeg` 从渲染帧读取，无渲染上下文时返回空串。待验收：Windows 真分支编译 + 离屏合成像素级冒烟。
+  - 新增 `tests/test_rhi_geometry.cpp`（P1-2）：`compute_ndc_rect` 几何（拉伸铺满 / 等比居中 letterbox+pillarbox / 尺寸退化 / 不变量：不越界·对称·纵横比守恒·完整装入）与 `is_valid_output_window_desc` 边界（空句柄 / 0 尺寸 / `kMaxOutputDimension` 上下界 / 默认构造非法）共 522 项检查 —— 纯逻辑在 `rhi.h` 内联，故是本机（无 D3D11）唯一自动化防线；已在 `tests/CMakeLists.txt` 注册（测试总数 22 → 23）。
+- 剩余缺口：RHI 侧「输出窗口 + DXGI 交换链」**已实现**（`OutputWindowDesc`/`is_valid_output_window_desc`/`IOutputSurface`/`IDevice::create_output_surface`，实现见 `rhi_d3d11.cpp`），但**尚未接到 `sm_desktop`** —— 「Qt 窗口句柄 → `create_output_surface()` → 每帧 `present(PGM 合成结果)`」的接线与掉线降级属 P1-1/P1-2 收尾项（`create_output_surface` 返回 `nullptr` 时须自动降级为“仅离屏 + 预监”，不得视为致命错误）；vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3 范畴）。
+- 依赖：P1-1 提供的窗口句柄（仅窗口输出部分；`sm_desktop` 接线后生效）。
+- DoD（离屏 + 输出窗口代码已达成）：4 层混合可用；`capture_pgm_frame_jpeg` 从渲染帧读取，无渲染上下文时返回空串；`create_output_surface()` 可在调用方 HWND 上建交换链并 `present` PGM 合成结果，失败返回 `nullptr` 由调用方降级。待验收：Windows 真分支编译（CI `build`）+ 离屏合成像素级冒烟 + `sm_desktop` 接线后的 1080p60 实机输出。
 
 ### P1-3 实时预监（PGM）链路打通
 
@@ -59,7 +60,7 @@
 
 ### P1-5 工程文件（.showproj）与 M1–M5 验收审计
 
-规格书 Phase 1 交付 M1 素材库、M2 媒体播放、M3 场景快照、M4 播放列表、M5 时间线调度，另有 .showproj（明文 zip + manifest + SHA-256，第 8 章）。现有单测已覆盖 engine 逻辑（test_media/test_scene/test_playlist/test_media_lib/test_timeline 等 22 项），但工程文件打包/校验与各模块 DoD 尚未按规格书逐条验收。
+规格书 Phase 1 交付 M1 素材库、M2 媒体播放、M3 场景快照、M4 播放列表、M5 时间线调度，另有 .showproj（明文 zip + manifest + SHA-256，第 8 章）。现有单测已覆盖 engine 逻辑（test_media/test_scene/test_playlist/test_media_lib/test_timeline 等 23 项），但工程文件打包/校验与各模块 DoD 尚未按规格书逐条验收。
 
 - 现状：待验收核对（勿假设完成）。
 - 落点：按规格书 11.4.2 的 WP 级 DoD 表逐项过；缺什么补什么。
@@ -112,13 +113,13 @@ AI 灯光自动生成、8K 输出、多实例、数据服务。全部未开始�
 
 | ID | 任务 | 说明 |
 | --- | --- | --- |
-| H-1 | ✅ 已完成（2026-09-10） | 核对结论：`README.md`（第 27 行）、`docs/BUILD_WINDOWS.md`（第 46 行）、`docs/VERIFY_WINDOWS_MEDIA.md`（第 27/68/77 行）的 ctest 计数**均已是 22/22**，本项无实际残留；`jpeg_codec.cpp` 已落地并有 `test_jpeg_codec`，`docs/DEVELOPMENT_HANDOFF.md` 中相关描述亦已同步 |
+| H-1 | ✅ 已完成（2026-09-10；2026-09-10 P1-2 复校） | 核对结论：`README.md`（第 27 行）、`docs/BUILD_WINDOWS.md`（第 46 行）、`docs/VERIFY_WINDOWS_MEDIA.md`（第 27/68/77 行）的 ctest 计数已随 `test_rhi_geometry` 落地统一更新为 **23/23**（原 22/22 为新增该用例之前的基线），本项无实际残留；`jpeg_codec.cpp` 已落地并有 `test_jpeg_codec`，`docs/DEVELOPMENT_HANDOFF.md` 中相关描述亦已同步 |
 | H-2 | ✅ 已完成（2026-09-10） | `docs/DEVELOPMENT_HANDOFF.md` 已重写为当前基线：日期更新至 09-10；§2 补入 `sm_desktop`（Qt 6.7 桌面端）与 `rhi/`；§3 移除过期的「最近一次全绿 run 基于 e21c17b」（其后已有 16 个提交）；§4 新增 `rhi/` 渲染抽象层与 PGM 链路两节，并作废「D3D11 渲染输出属未开始」与「没有调用方驱动 `capture_pgm_frame_jpeg`」两处过期论断；新增 §6 文档卫生记录 |
 
 ## 7. 建议执行顺序
 
 1. H-1 / H-2 ✅ 已完成（2026-09-10，文档误导已消除，见 §6）。
-2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）。
+2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）——**进行中**：P1-2 的 RHI 输出窗口（DXGI 交换链）+ 几何单测已落地，剩余为 `sm_desktop` 接线（Qt 窗口句柄 → `create_output_surface()` → 每帧 `present`）与 Windows CI 真编译确认。
 3. P1-3（渲染帧通道就绪后打通预监）、P1-4（传输控制补齐）。
 4. P1-5 审计 + P1-6 门禁，作为 Phase 1 发布验收。
 5. Phase 2 起按 P2-x 顺序，P2-1 MIDI 不依赖渲染可提前插入。
