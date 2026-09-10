@@ -33,7 +33,11 @@ set(SM_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
 # ---- 编译器警告 -----------------------------------------------------------
 if(MSVC)
-  add_compile_options(/W4 /permissive-)
+  # /utf-8：本仓库源码一律 UTF-8（注释与日志字面量大量含中文）。MSVC 默认按
+  # 系统 ANSI 代码页解析源文件，会把中文字面量编译成乱码（运行期日志出现
+  # "??????"），且 UTF-8 多字节序列中若出现映射为反斜杠的字节还会误触发续行、
+  # 吞掉下一行代码。/utf-8 等价于 /source-charset:utf-8 /execution-charset:utf-8。
+  add_compile_options(/W4 /permissive- /utf-8)
 else()
   add_compile_options(-Wall -Wextra)
 endif()
