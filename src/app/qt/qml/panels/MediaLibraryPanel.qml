@@ -81,8 +81,12 @@ Rectangle {
             running: root.hintText !== ""
             onTriggered: { root.hintText = ""; }
         }
-        onHintTickChanged: { hintTimer.restart(); }
     }
+    // hintTick 的属主是 root：QML 的 onXxxChanged 只绑定「所在对象自身」的信号，
+    // 写在子项 hintBanner 内会被解析为不存在的属性，运行期报
+    // Cannot assign to non-existent property "onHintTickChanged"，
+    // 进而使整个 MediaLibraryPanel 类型不可用（Main.qml 装载失败 → --smoke 退出 1）。
+    onHintTickChanged: hintTimer.restart()
 
     // =========================================================================
     // 数据：查询/渲染/刷新
