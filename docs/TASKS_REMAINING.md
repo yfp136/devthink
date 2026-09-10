@@ -1,6 +1,6 @@
 # ShowMaster 剩余任务清单
 
-基线：2026-09-09，Windows CI（run #7，commit e21c17b）全绿：vcpkg 依赖 → MSVC 编译 → ctest 22/22 → headless 冒烟测试通过。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。
+基线：2026-09-10（HEAD `97760ad`）。本机 macOS 侧 `ctest` 22/22 全绿；Windows CI（`.github/workflows/windows-build.yml`）的 `build`（vcpkg 依赖 → MSVC 编译 → ctest 22/22 → headless 冒烟）与 `desktop`（Qt 6.7 → `sm_desktop --smoke`）两个 job 的绿灯状态**请以 GitHub Actions 页面为准**（本机无 Qt/vcpkg，无法本地复现）。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
 
 ## 1. 总体结论
 
@@ -31,7 +31,7 @@
 
 ### P1-2 D3D11 渲染与帧通道（规格书 M2 10.2.3 / 第 2.3 章 RHI）
 
-- 现状：离屏渲染与帧通道部分完成（2026-09-09 本地提交前，macOS 侧 stub 分支 configure + 编译 + ctest 22/22 通过；Windows 真分支待 CI/真机编译验证）。
+- 现状：离屏渲染与帧通道部分完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest 22/22 通过；Windows 真分支待 CI/真机编译验证）。
   - 新增 RHI 抽象层 `src/platform/rhi/rhi.h`：`PixelFormat`/`BlendOp`/`BlendConfig`/`Texture2DDesc`、`ITexture`（upload/readback/native_handle）、`IPgmMixer`（`kMaxLayers=4` 层混合 + `compose`/`compose_and_readback`）、`IDevice`（`create_device()` 工厂）。
   - D3D11 后端 `src/platform/rhi/rhi_d3d11.cpp`：离屏设备（HW→WARP 回退，无交换链）；纹理 `UpdateSubresource` 上传；离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应。非 Windows/未启用 `SM_HAS_D3D11` 时提供返回 `nullptr` 的 stub。
   - `CMakeLists.txt`：glob 纳入 `src/platform/rhi/*.cpp`；`if(WIN32)` 下 `sm_engines` PUBLIC 链接 `d3d11 dxgi d3dcompiler`、PRIVATE 定义 `SM_HAS_D3D11=1`（同 `SM_HAS_FFMPEG` 模式）。
@@ -112,12 +112,12 @@ AI 灯光自动生成、8K 输出、多实例、数据服务。全部未开始�
 
 | ID | 任务 | 说明 |
 | --- | --- | --- |
-| H-1 | 文档计数同步 | `README.md` 仍写"8/8"、`docs/BUILD_WINDOWS.md` 仍写"15/15"，实际 ctest 为 22/22；`docs/DEVELOPMENT_HANDOFF.md` 称 JPEG 编码器未实现，已过期（`jpeg_codec.cpp` 已落地并有 `test_jpeg_codec`） |
-| H-2 | 过期注释清理 | `docs/DEVELOPMENT_HANDOFF.md` 交接主线已全部完成，建议重写为当前基线并指向本清单 |
+| H-1 | ✅ 已完成（2026-09-10） | 核对结论：`README.md`（第 27 行）、`docs/BUILD_WINDOWS.md`（第 46 行）、`docs/VERIFY_WINDOWS_MEDIA.md`（第 27/68/77 行）的 ctest 计数**均已是 22/22**，本项无实际残留；`jpeg_codec.cpp` 已落地并有 `test_jpeg_codec`，`docs/DEVELOPMENT_HANDOFF.md` 中相关描述亦已同步 |
+| H-2 | ✅ 已完成（2026-09-10） | `docs/DEVELOPMENT_HANDOFF.md` 已重写为当前基线：日期更新至 09-10；§2 补入 `sm_desktop`（Qt 6.7 桌面端）与 `rhi/`；§3 移除过期的「最近一次全绿 run 基于 e21c17b」（其后已有 16 个提交）；§4 新增 `rhi/` 渲染抽象层与 PGM 链路两节，并作废「D3D11 渲染输出属未开始」与「没有调用方驱动 `capture_pgm_frame_jpeg`」两处过期论断；新增 §6 文档卫生记录 |
 
 ## 7. 建议执行顺序
 
-1. H-1 / H-2（半小时内，先消除文档误导）。
+1. H-1 / H-2 ✅ 已完成（2026-09-10，文档误导已消除，见 §6）。
 2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）。
 3. P1-3（渲染帧通道就绪后打通预监）、P1-4（传输控制补齐）。
 4. P1-5 审计 + P1-6 门禁，作为 Phase 1 发布验收。
