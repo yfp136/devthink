@@ -12,6 +12,7 @@
 // =============================================================================
 #include "app/qt/output_window.h"
 
+#include <QDebug>   // qWarning()/qInfo() 的 operator<< 需要 QDebug 完整类型（MSVC error C2027）
 #include <QString>
 #include <QWindow>
 #include <QtGlobal>
