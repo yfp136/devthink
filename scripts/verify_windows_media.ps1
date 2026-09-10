@@ -42,8 +42,11 @@ Write-Host ""
 
 # ---- 0. vcpkg dependency check -------------------------------------------
 if (-not $env:VCPKG_ROOT) {
-    Warn "VCPKG_ROOT is not set - ffmpeg/sqlite3 may not be found by the toolchain."
-    Warn "Set it, e.g.:  `$env:VCPKG_ROOT = 'C:\vcpkg'"
+    # 必须硬失败：VCPKG_ROOT 为空时下面的 -DCMAKE_TOOLCHAIN_FILE 会拼成不存在的路径，
+    # Join-Path 在 $ErrorActionPreference=Stop 下抛出的是一句无从下手的参数绑定异常。
+    Fail "VCPKG_ROOT is not set - the vcpkg toolchain path cannot be built, so ffmpeg/sqlite3 will not be found."
+    Write-Host "  Set it first, e.g.:  `$env:VCPKG_ROOT = 'C:\vcpkg'"
+    exit 1
 } elseif (-not $SkipVcpkgInstall) {
     Write-Host "[1/5] vcpkg install sqlite3 + ffmpeg ..." -ForegroundColor Cyan
     & (Join-Path $env:VCPKG_ROOT "vcpkg.exe") install sqlite3:x64-windows
@@ -65,13 +68,16 @@ try {
         exit 1
     }
     $cfg = Get-Content $CfgLog -Raw
-    if ($cfg -match "FFmpeg found - enabling real media backend") {
+    # 只匹配 ASCII 子串。CMakeLists.txt 原文是 "FFmpeg found — enabling real media backend"
+    # （破折号 U+2014），非 UTF-8 控制台代码页下该字符会被替换成 "?"，整句匹配会静默漏掉，
+    # 结果是「真后端」与「stub 后端」两个分支全都不命中、掉进 Warn —— 门禁形同虚设。
+    if ($cfg -match "FFmpeg found") {
         Pass "configured with REAL media backend (FFmpeg found)"
-    } elseif ($cfg -match "FFmpeg not found - using stub media backend") {
+    } elseif ($cfg -match "stub media backend") {
         Fail "configured with STUB backend - ffmpeg not found. Check vcpkg ffmpeg:x64-windows + VCPKG_ROOT toolchain."
         exit 1
     } else {
-        Warn "configure succeeded but 'FFmpeg found' log line not seen - inspect $CfgLog"
+        Warn "configure succeeded but the 'FFmpeg found' substring was not seen - inspect $CfgLog"
     }
 } finally { Pop-Location }
 
@@ -115,12 +121,37 @@ try {
 
     # HTTP status is the hard gate; the [audio] log line is best-effort
     # because stdout is fully buffered when redirected to a file.
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/status" `
-        -UseBasicParsing -TimeoutSec 5
-    if ($resp.StatusCode -eq 200) {
-        Pass "GET /api/status -> $($resp.StatusCode)"
+    #
+    # /api/status 是需要鉴权的（web_gateway.cpp: check_auth 从 Authorization: Bearer
+    # 或 ?token= 取会话 token），裸请求会 401；而 Invoke-WebRequest 在
+    # $ErrorActionPreference=Stop 下会把 401 变成终止性异常，直接炸掉最后一步。
+    # 因此先 POST /api/login（默认 admin/admin123）换 token，与 CI 步骤一致。
+    $login = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Milliseconds 500
+        try {
+            $login = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/login" `
+                -Method Post -ContentType "application/json" `
+                -Body '{"username":"admin","password":"admin123"}' -TimeoutSec 3
+            if ($login.token) { break }
+        } catch { }
+    }
+    if (-not $login -or -not $login.token) {
+        Fail "POST /api/login did not return a token within ~15s"
     } else {
-        Fail "GET /api/status -> $($resp.StatusCode) (expected 200)"
+        Pass "POST /api/login -> session token acquired"
+        try {
+            $hdr = @{ Authorization = "Bearer $($login.token)" }
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/status" `
+                -Headers $hdr -UseBasicParsing -TimeoutSec 5
+            if ($resp.StatusCode -eq 200) {
+                Pass "GET /api/status -> $($resp.StatusCode)"
+            } else {
+                Fail "GET /api/status -> $($resp.StatusCode) (expected 200)"
+            }
+        } catch {
+            Fail "GET /api/status threw: $($_.Exception.Message)"
+        }
     }
 
     $stdout = ""
