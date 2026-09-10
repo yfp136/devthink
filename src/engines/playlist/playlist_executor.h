@@ -139,8 +139,11 @@ class PlaylistExecutor {
   void advance(int64_t now_ms, const std::string& reason);
   // 检查当前条目是否结束
   bool is_current_done(int64_t now_ms);
-  // 发事件
-  void emit(const std::string& name, const nlohmann::json& params);
+  // 发事件（注意：不可命名为 emit —— Qt 的 <QtGlobal>/qobjectdefs.h 把 emit
+  // 定义为空宏，凡先包含 Qt 头再包含本头（如 src/app/qt/kernel_host.cpp）的 TU
+  // 都会把该声明展开成 `void (const std::string&, ...);`，MSVC 报 C2059
+  // syntax error: 'const'。故统一命名为 emit_event。）
+  void emit_event(const std::string& name, const nlohmann::json& params);
 };
 
 }  // namespace playlist

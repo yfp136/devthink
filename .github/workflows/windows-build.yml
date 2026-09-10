@@ -196,8 +196,8 @@ jobs:
             $lines = @(Get-Content $log)
             $errs = @($lines | Where-Object {
               $_ -match '(?i)error C[0-9]|error LNK|error MSB|fatal error|RCC: Error|moc: |错误'
-            } | Select-Object -First 12)
-            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 12) }
+            } | Select-Object -Unique | Select-Object -First 15)
+            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 15) }
             $msg = ($errs -join ' || ')
             if ($msg.Length -gt 4000) { $msg = $msg.Substring(0, 4000) }
             Write-Host "::error::sm_desktop build failed (exit $code): $msg"

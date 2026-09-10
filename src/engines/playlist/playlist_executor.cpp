@@ -74,13 +74,13 @@ void PlaylistExecutor::load(const std::vector<PlaylistItem>& items) {
             });
   current_index_ = -1;
   state_ = ExecState::loaded;
-  emit("evt.playlist.loaded", {{"item_count", items_.size()}});
+  emit_event("evt.playlist.loaded", {{"item_count", items_.size()}});
 }
 
 void PlaylistExecutor::start() {
   if (state_.load() != ExecState::loaded) return;
   if (items_.empty()) {
-    emit("evt.error", {{"code", 5002}, {"message", "playlist empty"}});
+    emit_event("evt.error", {{"code", 5002}, {"message", "playlist empty"}});
     return;
   }
   state_ = ExecState::running;
@@ -110,7 +110,7 @@ void PlaylistExecutor::resume() {
 void PlaylistExecutor::stop() {
   if (stop_media_) stop_media_();
   state_ = ExecState::ended;
-  emit("evt.playlist.ended", {{"reason", "manual_stop"}});
+  emit_event("evt.playlist.ended", {{"reason", "manual_stop"}});
 }
 
 void PlaylistExecutor::go() {
@@ -132,7 +132,7 @@ void PlaylistExecutor::next() {
 void PlaylistExecutor::execute_current(int64_t now_ms) {
   if (current_index_ < 0 || current_index_ >= int(items_.size())) {
     state_ = ExecState::ended;
-    emit("evt.playlist.ended", {{"reason", "end"}});
+    emit_event("evt.playlist.ended", {{"reason", "end"}});
     return;
   }
 
@@ -140,14 +140,14 @@ void PlaylistExecutor::execute_current(int64_t now_ms) {
 
   // timecode 在 P1 禁止
   if (item.trigger == TriggerMode::timecode) {
-    emit("evt.error", {{"code", 5003}, {"message", "timecode not supported in P1"}});
+    emit_event("evt.error", {{"code", 5003}, {"message", "timecode not supported in P1"}});
     advance(now_ms, "skipped_timecode");
     return;
   }
 
   // timeline_segment P1 跳过
   if (item.type == ItemType::timeline_segment) {
-    emit("evt.error", {{"code", 5003}, {"message", "timeline_segment not supported in P1"}});
+    emit_event("evt.error", {{"code", 5003}, {"message", "timeline_segment not supported in P1"}});
     advance(now_ms, "skipped_segment");
     return;
   }
@@ -186,7 +186,7 @@ void PlaylistExecutor::execute_current(int64_t now_ms) {
       break;
   }
 
-  emit("evt.playlist.item_started", {
+  emit_event("evt.playlist.item_started", {
     {"index", current_index_},
     {"item_id", item.item_id},
     {"type", item_type_name(item.type)}
@@ -218,7 +218,7 @@ bool PlaylistExecutor::is_current_done(int64_t now_ms) {
 }
 
 void PlaylistExecutor::advance(int64_t now_ms, const std::string& reason) {
-  emit("evt.playlist.item_ended", {
+  emit_event("evt.playlist.item_ended", {
     {"index", current_index_},
     {"reason", reason}
   });
@@ -238,7 +238,7 @@ void PlaylistExecutor::advance(int64_t now_ms, const std::string& reason) {
       execute_current(now_ms);
     } else {
       state_ = ExecState::ended;
-      emit("evt.playlist.ended", {{"reason", "end"}});
+      emit_event("evt.playlist.ended", {{"reason", "end"}});
     }
     return;
   }
@@ -270,7 +270,7 @@ void PlaylistExecutor::tick(int64_t now_ms) {
     case TriggerMode::go:
       // 停在 waiting_go，等手动 go
       state_ = ExecState::waiting_go;
-      emit("evt.playlist.waiting_go", {{"index", current_index_}});
+      emit_event("evt.playlist.waiting_go", {{"index", current_index_}});
       break;
     case TriggerMode::delay:
       // 内容结束后额外等待 delay_ms
@@ -290,7 +290,7 @@ void PlaylistExecutor::tick(int64_t now_ms) {
   }
 }
 
-void PlaylistExecutor::emit(const std::string& name, const json& params) {
+void PlaylistExecutor::emit_event(const std::string& name, const json& params) {
   if (event_cb_) event_cb_(name, params);
 }
 

@@ -1,6 +1,8 @@
 // UiController 实现（P1-1-D），参见 ui_controller.h 装配说明。
 #include "app/qt/ui_controller.h"
 
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QUrl>
 
 namespace sm::desktop {
