@@ -1,11 +1,13 @@
 // 工程文件格式 .showproj v1（规格 §8）
 // 工程 = 标准 zip 容器 + manifest.json 主清单 + 可选打包资源。
-// 里程碑说明：zip 容器读写（minizip-ng）属平台里程碑，本模块为纯逻辑内核版，
-// 只负责 manifest.json 的结构校验与行集抽取/装配；zip 层拿到 manifest 文本后
-// 调用本模块完成语义校验，错误码对齐 §5.5 的 4xxx 区间：
+// 里程碑说明：本模块是**纯逻辑内核版**，只负责 manifest.json 的结构校验与
+// 行集抽取/装配——语义校验的单一归属地。zip 容器读写（写出/读回/CRC-32 完整性）
+// 已由 project_zip.{h,cpp} + project_archive.{h,cpp} 落地（P1-5，零第三方依赖的
+// STORE-only 明文 zip），二者分工：archive 层拿到 manifest 文本后调用本模块完成
+// 语义校验，错误码对齐 §5.5 的 4xxx 区间：
 //   4001 工程损坏（JSON 非法 / 缺少必填字段 / 结构错误）
 //   4002 版本过新（format 或 version 超当前支持）
-//   4003 打包素材缺失（pack 模式引用文件不在包内，由 zip/加载层报告）
+//   4003 打包素材缺失（pack 模式引用文件不在包内，由 archive/加载层报告）
 #pragma once
 
 #include <string>

@@ -69,3 +69,8 @@ sm_add_unit_test(test_output_window_api sm_engines)
 # 引用路径必属已注册路由、传输控制 play/stop/pause/resume 端到端齐全 ——
 # 前端是裸 HTML 字符串，编译器不检查，只能靠用例钉住）
 sm_add_unit_test(test_web_ui sm_web)
+
+# 工程文件 .showproj 容器层（P1-5：明文 zip + manifest + SHA-256 全流程 ——
+# 写出/读回与 CRC-32 完整性、save→load 往返（ref/pack）、4001/4002/4003，
+# 保存失败不破坏既有工程、backups/ 仅保留最近 5 份）
+sm_add_unit_test(test_project_zip sm_core)

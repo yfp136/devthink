@@ -1,6 +1,6 @@
 # ShowMaster 剩余任务清单
 
-基线：2026-09-10（本机 HEAD `f05e31b`；工作区含 P1-4 收尾的 Web 控制台续播按钮/接口与 `test_web_ui`、以及 CI 修复的 `<QDebug>` 包含）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest（该 run 时点为 22/22）→ headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。run #34436939684（commit `1b17e97`）的 `desktop` job **再次全绿**（步骤 1–11 + 4 个 post 步骤全部 success，含步骤 8 Build sm_desktop、步骤 10 Smoke test），即 **P1-2 的 D3D11 输出窗口代码已在 Windows/MSVC 下真编译通过**；同 run 的 `build` job 仍在执行（vcpkg `ffmpeg` 安装耗时较长，步骤 4 进行中，其后才轮到 ctest 与 headless 冒烟）。run #34437790755（commit `f05e31b`，即 P1-2 收尾把 `sm_desktop` 输出视口**调用方接线**并入构建的那次提交）的 `desktop` job 在步骤 8 `Build sm_desktop` **失败**（步骤 9/10/11 skipped）：`src/app/qt/output_window.cpp(60/82/105): error C2027: use of undefined type 'QDebug'` —— 根因是该文件的包含集仅 `<QString>/<QWindow>/<QtGlobal>`（只**前向声明** `QDebug`），而 `qWarning().noquote() <<` / `qInfo().noquote() <<` 需要 `QDebug` **完整类型**；`ui_controller.cpp` 用同样写法却能编译，只是因为 `QQmlApplicationEngine`（QtQml）顺带把 `QDebug` 传递包含进来了。**已修复**：补 `#include <QDebug>`（结果待新 run 复验）。本机（macOS）侧 `ctest` **25/25** 全绿（stub 分支，无 Qt；P1-2 收尾新增 `test_output_window_api` 后 23 → 24，P1-4 收尾新增 `test_web_ui` 后 24 → 25，全仓计数同步为 `25/25`）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
+基线：2026-09-10（本机 HEAD `128fc89`；工作区含 P1-5 容器层新增的 `src/project/project_zip.{h,cpp}`、`src/project/project_archive.{h,cpp}` 与 `tests/test_project_zip.cpp`）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest（该 run 时点为 22/22）→ headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。run #34436939684（commit `1b17e97`）的 `desktop` job **再次全绿**（步骤 1–11 + 4 个 post 步骤全部 success，含步骤 8 Build sm_desktop、步骤 10 Smoke test），即 **P1-2 的 D3D11 输出窗口代码已在 Windows/MSVC 下真编译通过**；同 run 的 `build` job 仍在执行（vcpkg `ffmpeg` 安装耗时较长，步骤 4 进行中，其后才轮到 ctest 与 headless 冒烟）。run #34437790755（commit `f05e31b`，即 P1-2 收尾把 `sm_desktop` 输出视口**调用方接线**并入构建的那次提交）的 `desktop` job 在步骤 8 `Build sm_desktop` **失败**（步骤 9/10/11 skipped）：`src/app/qt/output_window.cpp(60/82/105): error C2027: use of undefined type 'QDebug'` —— 根因是该文件的包含集仅 `<QString>/<QWindow>/<QtGlobal>`（只**前向声明** `QDebug`），而 `qWarning().noquote() <<` / `qInfo().noquote() <<` 需要 `QDebug` **完整类型**；`ui_controller.cpp` 用同样写法却能编译，只是因为 `QQmlApplicationEngine`（QtQml）顺带把 `QDebug` 传递包含进来了。**已修复并复验通过**：补 `#include <QDebug>`（commit `a94c26f`）后，run #34438302868（commit `128fc89`）的 `desktop` job **全绿**——步骤 1–11 + 4 个 post 步骤全部 success，含步骤 8 `Build sm_desktop` 与步骤 10 `Smoke test sm_desktop (--smoke, expect exit code 0)`；同 run 的 `build` job 于本次核对时仍在执行（步骤 4 vcpkg 依赖安装，`ffmpeg` 编译耗时较长，其后才轮到 ctest 与 headless 冒烟）。本机（macOS）侧 `ctest` **26/26** 全绿（stub 分支，无 Qt；P1-2 收尾新增 `test_output_window_api` 后 23 → 24，P1-4 收尾新增 `test_web_ui` 后 24 → 25，P1-5 容器层新增 `test_project_zip` 后 25 → 26，全仓计数同步为 `26/26`）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
 
 ## 1. 总体结论
 
@@ -63,11 +63,16 @@
 
 ### P1-5 工程文件（.showproj）与 M1–M5 验收审计
 
-规格书 Phase 1 交付 M1 素材库、M2 媒体播放、M3 场景快照、M4 播放列表、M5 时间线调度，另有 .showproj（明文 zip + manifest + SHA-256，第 8 章）。现有单测已覆盖 engine 逻辑（test_media/test_scene/test_playlist/test_media_lib/test_timeline 等 25 项），但工程文件打包/校验与各模块 DoD 尚未按规格书逐条验收。
+规格书 Phase 1 交付 M1 素材库、M2 媒体播放、M3 场景快照、M4 播放列表、M5 时间线调度，另有 .showproj（明文 zip + manifest + SHA-256，第 8 章）。现有单测已覆盖 engine 逻辑（test_media/test_scene/test_playlist/test_media_lib/test_timeline 等 26 项），但工程文件打包/校验与各模块 DoD 尚未按规格书逐条验收。
 
-- 现状：待验收核对（勿假设完成）。
-- 落点：按规格书 11.4.2 的 WP 级 DoD 表逐项过；缺什么补什么。
-- DoD：M1–M5 各状态机可达、错误码正确；工程文件 zip/manifest/SHA-256 行为与第 8 章一致。
+- 现状（2026-09-10 复校）：**工程文件容器层已落地，M1–M5 的 WP 级 DoD 逐项审计仍待完成**。此前 `src/project/project_file.{h,cpp}` 头注释自述「zip 容器读写（minizip-ng）属平台里程碑，本模块为纯逻辑内核版，只负责 manifest.json 的结构校验与行集抽取/装配」——即第 8 章的容器读写这一环是**真实缺口**，本轮补齐。
+  - 新增 `src/project/project_zip.{h,cpp}`：自包含 **STORE（不压缩，method 0）** 的 zip 编解码器。**取舍说明**：规格书只要求「明文 zip」（可被任意解压工具读出），未强制具体库；已压媒体再 deflate 收益极低，且引入 minizip-ng/zlib 会把内核里程碑绑死在 vcpkg 上。故用 ~330 行零第三方依赖实现替代原计划的 minizip-ng，收益是**内核里程碑在 macOS 与 Windows CI 上均可本机自测**。写出侧同时打本地头 + 中央目录 + EOCD，条目名置 UTF-8 标志位（`0x0800`，中文素材名可被标准工具正确解码），DOS 日期固定为 `1980-01-01` 以使**同一输入产出逐字节确定的包**（便于哈希比对与回归）；超出 zip32 上限（条目数 > 65535、单条目 ≥ 4 GiB）**显式报错而非静默截断**。读取侧反向搜索 EOCD（含最长 65535 字节注释），解析中央目录后逐条回查本地头（`crc`/`size` 不一致即「中央目录与本地头信息不一致」）并复算 CRC-32，**任一不符即整体失败**（不做「尽力而为」的部分解析）。
+  - 新增 `src/project/project_archive.{h,cpp}`：按 §8.3/§8.4 编排 save/load。`save_project` 五步——pack 模式素材入库（`sha256_file_hex` → 包内名 `media/<sha256前16位>_<原文件名>`，同名同内容幂等跳过、同名异内容报「包内命名冲突」；`media_files` 以有序 map 重建以保证输出确定性）→ 写 `saved_at` + `dump(2)` + `validate_manifest`（语义校验仍归 `project_file`，此处不重复实现）→ 写 `.tmp` → **回读 `.tmp` 复验**（zip 完整性 + 清单复校 + 打包素材 SHA-256 复校）→ `backups/` 轮转（按 mtime 保留最近 5 份）→ 原子 `rename`（跨卷时 `copy_file(overwrite_existing)` 兜底）。**任何失败路径都不动既有工程文件**。`load_project` 严格**全有或全无**：只有完整校验通过的 manifest 才交付，失败一律返回空对象（不存在「半加载」状态）；错误码 `PROJECT_CORRUPT=4001` / `PROJECT_VERSION_TOO_NEW=4002` / `PACKED_MEDIA_MISSING=4003`。
+  - 新增 `tests/test_project_zip.cpp`（102 项检查）：CRC-32 标准向量 `crc32("123456789")==0xCBF43926`、zip 往返（含二进制与空条目）、损坏包拒绝（截断/坏签名/篡改 CRC）、ref 与 pack 两种 save→load 往返、4001/4002/4003 错误码、保存失败后原文件逐字节不变且无 `.tmp` 残留、`backups/` 恰好保留 5 份且最新的可加载、素材引用去重、打包素材 SHA-256 不匹配 → 4001；已在 `tests/CMakeLists.txt` 注册（测试总数 25 → 26）。
+  - **本机验证**：`cmake --build --preset debug` 通过，`ctest` **26/26** 全绿（`test_project_zip` 102 项检查通过）。另做**独立互操作验证**（非仓库代码，用系统工具交叉验证「明文 zip」规格达成）：用 `project_archive` 写出一份 pack 模式 `.showproj` 后，系统 `unzip -t` 报 `No errors detected`、Python `zipfile.testzip()` 返回 `None`、`flag_bits==0x0800`、`compress_type==0`、中文条目名 `media/29499e32a39fb416_片头.mp4` 正确解码，且清单内 `media_files[0].sha256` 与实际条目内容的 SHA-256 逐位一致。
+- 落点（已完成部分）：`src/project/project_zip.{h,cpp}` + `src/project/project_archive.{h,cpp}` + `tests/test_project_zip.cpp`（无需改根 `CMakeLists.txt`——`sm_core` 已 glob `project/*.cpp`）。
+- 剩余缺口：按规格书 11.4.2 的 WP 级 DoD 表把 M1–M5 逐条过一遍（各状态机可达性、错误码正确性），缺什么补什么。
+- DoD：M1–M5 各状态机可达、错误码正确；工程文件 zip/manifest/SHA-256 行为与第 8 章一致（容器层 ✅ 已达成并验证；M1–M5 审计待过）。
 
 ### P1-6 端到端冒烟与性能门禁（11.5 / 11.6）
 
@@ -122,7 +127,7 @@ AI 灯光自动生成、8K 输出、多实例、数据服务。全部未开始�
 ## 7. 建议执行顺序
 
 1. H-1 / H-2 ✅ 已完成（2026-09-10，文档误导已消除，见 §6）。
-2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）——**代码级完成，待验收**：P1-2 的 RHI 输出窗口（DXGI 交换链）+ 几何单测 + `sm_desktop` 接线（Qt 窗口句柄 → `open_output_window()` → 渲染线程每帧 `present`，失败降级「仅离屏 + 预监」）均已落地，本机 ctest **25/25**；剩余为推送 `<QDebug>` 修复后 CI 新 run 的真编译确认与 Windows 实机 1080p60 人工验收（D3D11 输出窗口代码本身已在 commit `1b17e97` 的 `desktop` job 编译链接通过；调用方接线那次提交 `f05e31b` 因缺 `QDebug` 完整类型失败，已修复）。
+2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）——**代码级完成，待验收**：P1-2 的 RHI 输出窗口（DXGI 交换链）+ 几何单测 + `sm_desktop` 接线（Qt 窗口句柄 → `open_output_window()` → 渲染线程每帧 `present`，失败降级「仅离屏 + 预监」）均已落地，本机 ctest **26/26**；剩余为推送 `<QDebug>` 修复后 CI 新 run 的真编译确认（✅ 已复验：run #34438302868 的 `desktop` job 全绿）与 Windows 实机 1080p60 人工验收（D3D11 输出窗口代码本身已在 commit `1b17e97` 的 `desktop` job 编译链接通过；调用方接线那次提交 `f05e31b` 因缺 `QDebug` 完整类型失败，已修复）。
 3. P1-3（渲染帧通道就绪后打通预监）、P1-4（传输控制补齐）✅ 已完成（服务端本就注入回调，本轮补齐前端续播入口并以 `test_web_ui` 钉住）。
-4. P1-5 审计 + P1-6 门禁，作为 Phase 1 发布验收。
+4. P1-5 审计 + P1-6 门禁，作为 Phase 1 发布验收 —— **P1-5 容器层（.showproj zip + manifest + SHA-256）✅ 已完成并通过本机 26/26 与系统 unzip/Python zipfile 交叉验证**；剩余为 M1–M5 的 11.4.2 WP 级 DoD 逐条审计。
 5. Phase 2 起按 P2-x 顺序，P2-1 MIDI 不依赖渲染可提前插入。
