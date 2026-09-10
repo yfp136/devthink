@@ -1,6 +1,6 @@
 # ShowMaster 剩余任务清单
 
-基线：2026-09-10（本机 HEAD `1b17e97`；工作区含 P1-2 收尾的 `sm_desktop` 输出视口接线改动）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest（该 run 时点为 22/22）→ headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。run #34436939684（commit `1b17e97`）的 `desktop` job **再次全绿**（步骤 1–11 + 4 个 post 步骤全部 success，含步骤 8 Build sm_desktop、步骤 10 Smoke test），即 **P1-2 的 D3D11 输出窗口代码已在 Windows/MSVC 下真编译通过**；同 run 的 `build` job 仍在执行（vcpkg `ffmpeg` 安装耗时较长，步骤 4 进行中，其后才轮到 ctest 与 headless 冒烟）。本机（macOS）侧 `ctest` **24/24** 全绿（stub 分支，无 Qt；P1-2 收尾新增 `test_output_window_api` 后测试总数由 23 增至 24，全仓计数同步为 `24/24`）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
+基线：2026-09-10（本机 HEAD `f05e31b`；工作区含 P1-4 收尾的 Web 控制台续播按钮/接口与 `test_web_ui`、以及 CI 修复的 `<QDebug>` 包含）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest（该 run 时点为 22/22）→ headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。run #34436939684（commit `1b17e97`）的 `desktop` job **再次全绿**（步骤 1–11 + 4 个 post 步骤全部 success，含步骤 8 Build sm_desktop、步骤 10 Smoke test），即 **P1-2 的 D3D11 输出窗口代码已在 Windows/MSVC 下真编译通过**；同 run 的 `build` job 仍在执行（vcpkg `ffmpeg` 安装耗时较长，步骤 4 进行中，其后才轮到 ctest 与 headless 冒烟）。run #34437790755（commit `f05e31b`，即 P1-2 收尾把 `sm_desktop` 输出视口**调用方接线**并入构建的那次提交）的 `desktop` job 在步骤 8 `Build sm_desktop` **失败**（步骤 9/10/11 skipped）：`src/app/qt/output_window.cpp(60/82/105): error C2027: use of undefined type 'QDebug'` —— 根因是该文件的包含集仅 `<QString>/<QWindow>/<QtGlobal>`（只**前向声明** `QDebug`），而 `qWarning().noquote() <<` / `qInfo().noquote() <<` 需要 `QDebug` **完整类型**；`ui_controller.cpp` 用同样写法却能编译，只是因为 `QQmlApplicationEngine`（QtQml）顺带把 `QDebug` 传递包含进来了。**已修复**：补 `#include <QDebug>`（结果待新 run 复验）。本机（macOS）侧 `ctest` **25/25** 全绿（stub 分支，无 Qt；P1-2 收尾新增 `test_output_window_api` 后 23 → 24，P1-4 收尾新增 `test_web_ui` 后 24 → 25，全仓计数同步为 `25/25`）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
 
 ## 1. 总体结论
 
@@ -31,7 +31,7 @@
 
 ### P1-2 D3D11 渲染与帧通道（规格书 M2 10.2.3 / 第 2.3 章 RHI）
 
-- 现状：离屏渲染 + 帧通道 + **输出窗口（DXGI 交换链）+ `sm_desktop` 接线** 完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest **24/24** 通过；Windows 真分支（`_WIN32 && SM_HAS_D3D11`）已由 CI `desktop` job 在 commit `1b17e97`（run #34436939684）**真编译通过**——该 job 步骤 8 Build sm_desktop 与步骤 10 Smoke test 均 success，这是 D3D11 输出窗口代码首次经 MSVC 编译链接；本轮新提交将把 `sm_desktop` 的调用方接线一并纳入该 job，故推送后须以新 run 的 `desktop`/`build` 结果为准）。
+- 现状：离屏渲染 + 帧通道 + **输出窗口（DXGI 交换链）+ `sm_desktop` 接线** 完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest **25/25** 通过；Windows 真分支（`_WIN32 && SM_HAS_D3D11`）已由 CI `desktop` job 在 commit `1b17e97`（run #34436939684）**真编译通过**——该 job 步骤 8 Build sm_desktop 与步骤 10 Smoke test 均 success，这是 D3D11 输出窗口代码首次经 MSVC 编译链接；**但**把调用方接线并入构建的 commit `f05e31b`（run #34437790755）在步骤 8 `Build sm_desktop` **失败**（`output_window.cpp: error C2027: use of undefined type 'QDebug'`），已补 `#include <QDebug>` 修复，推送后须以新 run 的 `desktop`/`build` 结果为准）。
   - 新增 RHI 抽象层 `src/platform/rhi/rhi.h`：`PixelFormat`/`BlendOp`/`BlendConfig`/`Texture2DDesc`、`ITexture`（upload/readback/native_handle）、`IPgmMixer`（`kMaxLayers=4` 层混合 + `compose`/`compose_and_readback`）、`IDevice`（`create_device()` 工厂）；P1-2 另增输出窗口契约 `NdcRect`/`compute_ndc_rect()`（合成与窗口输出共用的等比居中/拉伸几何）、`OutputWindowDesc`/`is_valid_output_window_desc()`、`IOutputSurface`/`IDevice::create_output_surface()`。
   - D3D11 后端 `src/platform/rhi/rhi_d3d11.cpp`：离屏设备（HW→WARP 回退）+ **本地窗口输出**（调用方 HWND 上建 DXGI 交换链；`FLIP_DISCARD`→`DISCARD` 自动回退、`OCCLUDED` 视为成功、设备丢失关面、`resize` 重建后缓冲且失败时按旧尺寸尽力恢复、vsync 收尾节流至刷新率）；纹理 `UpdateSubresource` 上传；离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应（与窗口输出共用同一几何函数与顶点缓冲）。非 Windows/未启用 `SM_HAS_D3D11` 时提供返回 `nullptr` 的 stub。
   - `CMakeLists.txt`：glob 纳入 `src/platform/rhi/*.cpp`；`if(WIN32)` 下 `sm_engines` PUBLIC 链接 `d3d11 dxgi d3dcompiler`、PRIVATE 定义 `SM_HAS_D3D11=1`（同 `SM_HAS_FFMPEG` 模式）。
@@ -39,6 +39,7 @@
   - 新增 `tests/test_rhi_geometry.cpp`（P1-2）：`compute_ndc_rect` 几何（拉伸铺满 / 等比居中 letterbox+pillarbox / 尺寸退化 / 不变量：不越界·对称·纵横比守恒·完整装入）与 `is_valid_output_window_desc` 边界（空句柄 / 0 尺寸 / `kMaxOutputDimension` 上下界 / 默认构造非法）共 522 项检查 —— 纯逻辑在 `rhi.h` 内联，故是本机（无 D3D11）唯一自动化防线；已在 `tests/CMakeLists.txt` 注册（测试总数 22 → 23）。
   - 新增 `tests/test_output_window_api.cpp`（P1-2 收尾）：锁定 `sm_desktop` 接线所依赖的**降级前置条件** —— 空句柄 / 0 尺寸 / 负尺寸 / `16385` / `20000`（超 `kMaxOutputDimension`）一律 `open_output_window()` 返回 false，且 `last_output_window_error()` 有可读文本（失败可取证）；`resize_output_window()` 在未登记时安全空操作（含 0/负/超大尺寸）；`close_output_window()` 可重入幂等；无能力分支（非 Windows / 未编 `SM_HAS_D3D11`）永不谎报成功。三个编译分支（真实现 / 无 D3D11 / stub）均须通过；已在 `tests/CMakeLists.txt` 注册（测试总数 23 → 24）。
   - `sm_desktop` 调用方接线（P1-2 收尾，本轮落地）：新增 `src/app/qt/output_window.{h,cpp}`（唯一调用方）+ `UiController` 持有并装配（`degraded` 信号转告警日志、`SM_NO_OUTPUT_WINDOW` 环境变量可跳过、失败非致命）；登记顺序与线程模型见 §4.3 与 `DEVELOPMENT_HANDOFF.md`。
+  - 新增 `tests/test_web_ui.cpp`（P1-4 收尾）：内嵌 Web 控制台（`kWebUIHtml`）是**裸 HTML 字符串，编译器不做任何检查**，故用静态一致性断言钉住三类静默缺陷 —— 页面基础（尺寸/`DOCTYPE`/`</html>`/`charset="utf-8"`/`lang="zh-CN"`/localStorage 令牌/`doLogout`）、`onclick` 处理器**必有**同名 `function NAME(` 定义、页面内 `/api/*` 与 `/ws/*` 字面量**必属** `web_gateway.cpp::register_routes` 的 25 条已注册路由白名单；并单独校验传输控制 `play/stop/pause/resume` 四条链路端到端齐全（路径被引用 + 路由已注册 + 函数有定义 + `onclick` 引用，且存在 `.btn-resume`）；已在 `tests/CMakeLists.txt` 注册（测试总数 24 → 25）。
 - 剩余缺口：**代码链路已闭合** —— RHI 侧「输出窗口 + DXGI 交换链」已实现（`rhi_d3d11.cpp`），`sm_desktop` 侧接线已落地（`src/app/qt/output_window.{h,cpp}`：`QWindow::winId()` → `platform::open_output_window()` → 渲染线程每帧 `present(PGM 合成结果)`；`resize`/`close` 分别转发 `resize_output_window()`/`close_output_window()`），并具备掉线降级：`create_output_surface()` 返回 `nullptr`（无能力 / 参数非法 / 建链失败）时自动降级为「仅离屏 + 预监」并闩存失败原因，**不是致命错误**。仅剩：推送后的 CI 新 run 真编译确认 + Windows 实机 1080p60 人工验收。vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3 范畴）。
 - 依赖：P1-1 提供的窗口句柄（已由 `sm_desktop` 接线满足）。
 - DoD（代码已达成，待实机验收）：4 层混合可用；`capture_pgm_frame_jpeg` 从渲染帧读取，无渲染上下文时返回空串；`create_output_surface()` 可在调用方 HWND 上建交换链并 `present` PGM 合成结果，失败返回 `nullptr` 由调用方降级；`sm_desktop` 已把 Qt 窗口句柄接入并转发 resize/close。剩余验收：Windows 实机确认输出视口出现并随播放刷新、1080p60 帧率达标（CI `desktop` job 已确认编译链接与启动无阻）。
@@ -56,13 +57,13 @@
 
 `web_gateway.cpp` 中 `/api/transport/pause` 与 `/api/transport/resume` 在回调未注入时返回 501 not implemented。
 
-- 现状：已核实缺口（需确认 kernel/headless 是否注入 `transport_pause_fn_`/`transport_resume_fn_`，未注入则补）。
-- 落点：`src/app/main_headless.cpp` 或 kernel 接线。
-- DoD：暂停/恢复经 HTTP 可达且状态正确；与 10.5.3 仲裁语义一致。
+- 现状：**已核实完成（2026-09-10 源码逐项核对）**，原「501 缺口」不成立。证据链：`src/app/main_headless.cpp:185-189` 同时注入 `transport_pause_fn` 与 `transport_resume_fn`（Qt 桌面侧为 `src/app/qt/kernel_host.cpp:118/123`）→ `web_gateway.cpp:304-330` 在回调存在时**直接执行并返回成功**，仅当回调为空才走 `json_err(501,"not implemented")`（该分支在 headless/桌面两种装配下均不可达）→ `Kernel::transport_pause()/transport_resume()`（`kernel.cpp:388/393`）转 `timeline_->scheduler().pause()/resume()`；`tests/test_kernel.cpp::test_transport_control` 已断言 play → paused → resume → playing → stopped 全状态迁移。本轮补上的**唯一真实缺口在前端**：内嵌控制台原本只有 `sendPause()` 而没有恢复入口（而 `web_ui.cpp` 头注释早已宣称「暂停/恢复」）——已新增 `function sendResume(){fetch('/api/transport/resume',…)}`、`续播` 按钮与 `.btn-resume` 样式，并由 `tests/test_web_ui.cpp` 钉住四条传输链路端到端齐全。
+- 落点：已完成（`src/web/web_ui.cpp` + `tests/test_web_ui.cpp`）。
+- DoD：暂停/恢复经 HTTP 可达且状态正确（✅ 服务端已具备 + 前端入口已补齐；真机浏览器点击验证并入 P1-1 人工验收）；与 10.5.3 仲裁语义一致（✅ 快速动作直连调度器，不经 RemoteQueue）。
 
 ### P1-5 工程文件（.showproj）与 M1–M5 验收审计
 
-规格书 Phase 1 交付 M1 素材库、M2 媒体播放、M3 场景快照、M4 播放列表、M5 时间线调度，另有 .showproj（明文 zip + manifest + SHA-256，第 8 章）。现有单测已覆盖 engine 逻辑（test_media/test_scene/test_playlist/test_media_lib/test_timeline 等 24 项），但工程文件打包/校验与各模块 DoD 尚未按规格书逐条验收。
+规格书 Phase 1 交付 M1 素材库、M2 媒体播放、M3 场景快照、M4 播放列表、M5 时间线调度，另有 .showproj（明文 zip + manifest + SHA-256，第 8 章）。现有单测已覆盖 engine 逻辑（test_media/test_scene/test_playlist/test_media_lib/test_timeline 等 25 项），但工程文件打包/校验与各模块 DoD 尚未按规格书逐条验收。
 
 - 现状：待验收核对（勿假设完成）。
 - 落点：按规格书 11.4.2 的 WP 级 DoD 表逐项过；缺什么补什么。
@@ -115,13 +116,13 @@ AI 灯光自动生成、8K 输出、多实例、数据服务。全部未开始�
 
 | ID | 任务 | 说明 |
 | --- | --- | --- |
-| H-1 | ✅ 已完成（2026-09-10；2026-09-10 P1-2 收尾复校） | 核对结论：`README.md`（第 27 行）、`docs/BUILD_WINDOWS.md`（第 46 行）、`docs/VERIFY_WINDOWS_MEDIA.md`（第 27/68/77 行）、`docs/DEVELOPMENT_HANDOFF.md`（第 49/51 行）的 ctest 计数已随 `test_rhi_geometry`（23）与 `test_output_window_api`（24）两次落地统一更新为 **24/24**，本项无实际残留；`jpeg_codec.cpp` 已落地并有 `test_jpeg_codec`，相关描述亦已同步 |
+| H-1 | ✅ 已完成（2026-09-10；2026-09-10 P1-2/P1-4 收尾复校） | 核对结论：`README.md`（第 27 行）、`docs/BUILD_WINDOWS.md`（第 46 行）、`docs/VERIFY_WINDOWS_MEDIA.md`（第 27/68/77 行）、`docs/DEVELOPMENT_HANDOFF.md`（第 49 行）的 ctest 计数已随 `test_rhi_geometry`（23）、`test_output_window_api`（24）、`test_web_ui`（25）三次落地统一更新为 **25/25**，本项无实际残留；`jpeg_codec.cpp` 已落地并有 `test_jpeg_codec`，相关描述亦已同步 |
 | H-2 | ✅ 已完成（2026-09-10） | `docs/DEVELOPMENT_HANDOFF.md` 已重写为当前基线：日期更新至 09-10；§2 补入 `sm_desktop`（Qt 6.7 桌面端）与 `rhi/`；§3 移除过期的「最近一次全绿 run 基于 e21c17b」（其后已有 16 个提交）；§4 新增 `rhi/` 渲染抽象层与 PGM 链路两节，并作废「D3D11 渲染输出属未开始」与「没有调用方驱动 `capture_pgm_frame_jpeg`」两处过期论断；新增 §6 文档卫生记录 |
 
 ## 7. 建议执行顺序
 
 1. H-1 / H-2 ✅ 已完成（2026-09-10，文档误导已消除，见 §6）。
-2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）——**代码级完成，待验收**：P1-2 的 RHI 输出窗口（DXGI 交换链）+ 几何单测 + `sm_desktop` 接线（Qt 窗口句柄 → `open_output_window()` → 渲染线程每帧 `present`，失败降级「仅离屏 + 预监」）均已落地，本机 ctest **24/24**；剩余为推送后 CI 新 run 的真编译确认与 Windows 实机 1080p60 人工验收（D3D11 输出窗口代码本身已在 commit `1b17e97` 的 `desktop` job 编译链接通过）。
-3. P1-3（渲染帧通道就绪后打通预监）、P1-4（传输控制补齐）。
+2. P1-1 + P1-2（桌面与渲染是本阶段核心，串行推进，P1-7 脚本骨架可并行）——**代码级完成，待验收**：P1-2 的 RHI 输出窗口（DXGI 交换链）+ 几何单测 + `sm_desktop` 接线（Qt 窗口句柄 → `open_output_window()` → 渲染线程每帧 `present`，失败降级「仅离屏 + 预监」）均已落地，本机 ctest **25/25**；剩余为推送 `<QDebug>` 修复后 CI 新 run 的真编译确认与 Windows 实机 1080p60 人工验收（D3D11 输出窗口代码本身已在 commit `1b17e97` 的 `desktop` job 编译链接通过；调用方接线那次提交 `f05e31b` 因缺 `QDebug` 完整类型失败，已修复）。
+3. P1-3（渲染帧通道就绪后打通预监）、P1-4（传输控制补齐）✅ 已完成（服务端本就注入回调，本轮补齐前端续播入口并以 `test_web_ui` 钉住）。
 4. P1-5 审计 + P1-6 门禁，作为 Phase 1 发布验收。
 5. Phase 2 起按 P2-x 顺序，P2-1 MIDI 不依赖渲染可提前插入。

@@ -44,6 +44,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .btn-play{background:#6c8aff;color:#fff}
 .btn-stop{background:#ff6b6b;color:#fff}
 .btn-pause{background:#ffa500;color:#fff}
+.btn-resume{background:#00b4d8;color:#fff}
 .btn-secondary{background:rgba(255,255,255,0.08);color:#e0e0e8;border:1px solid rgba(255,255,255,0.12)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .engine-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
@@ -102,6 +103,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 <div class="btn-row">
 <button class="btn btn-play" onclick="sendPlay()" style="flex:1">播放</button>
 <button class="btn btn-pause" onclick="sendPause()" style="flex:1">暂停</button>
+<button class="btn btn-resume" onclick="sendResume()" style="flex:1">续播</button>
 <button class="btn btn-stop" onclick="sendStop()" style="flex:1">停止</button>
 </div>
 <div class="pl-info" id="runtimeInfo">播放: <span id="rtState">--</span> | 位置: <span id="rtPos">0</span>ms | 媒体: <span id="rtMedia">--</span></div>
@@ -150,6 +152,7 @@ function sendGo(){fetch('/api/go',{method:'POST',headers:authHeader()}).then(()=
 function sendPlay(){fetch('/api/transport/play',{method:'POST',headers:authHeader(),body:JSON.stringify({media_id:''})}).then(()=>logEvent('Transport','play'))}
 function sendStop(){fetch('/api/transport/stop',{method:'POST',headers:authHeader()}).then(()=>logEvent('Transport','stop'))}
 function sendPause(){fetch('/api/transport/pause',{method:'POST',headers:authHeader()}).then(()=>logEvent('Transport','pause'))}
+function sendResume(){fetch('/api/transport/resume',{method:'POST',headers:authHeader()}).then(()=>logEvent('Transport','resume'))}
 function plStart(){fetch('/api/playlist/start',{method:'POST',headers:authHeader()}).then(()=>logEvent('Playlist','start'))}
 function plStop(){fetch('/api/playlist/stop',{method:'POST',headers:authHeader()}).then(()=>logEvent('Playlist','stop'))}
 function plNext(){fetch('/api/playlist/next',{method:'POST',headers:authHeader()}).then(()=>logEvent('Playlist','next'))}

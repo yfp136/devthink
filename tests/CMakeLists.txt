@@ -64,3 +64,8 @@ sm_add_unit_test(test_rhi_geometry sm_engines)
 # 参数非法/无能力一律拒绝、失败可取证、resize/close 在未登记时安全空操作；
 # 三个编译分支（真实现 / 无 D3D11 / stub）均须通过）
 sm_add_unit_test(test_output_window_api sm_engines)
+
+# 内嵌 Web 控制台静态一致性（P1-4 收尾：onclick 处理器必有定义、
+# 引用路径必属已注册路由、传输控制 play/stop/pause/resume 端到端齐全 ——
+# 前端是裸 HTML 字符串，编译器不检查，只能靠用例钉住）
+sm_add_unit_test(test_web_ui sm_web)
