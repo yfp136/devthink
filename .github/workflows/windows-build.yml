@@ -179,7 +179,30 @@ jobs:
 
       - name: Build sm_desktop
         shell: pwsh
-        run: cmake --build --preset windows-msvc-release --target sm_desktop
+        run: |
+          # 构建日志落盘；失败时把诊断行以单条 ::error:: 回显。
+          # 原因：本仓库 job 日志接口对外 403（需 admin），匿名只能读到 annotation，
+          # 故失败详情必须经 ::error:: 通道才能被外部看到；GitHub 每 step 最多 10 条
+          # error annotation，故多行合并为一条。
+          $log = Join-Path $env:RUNNER_TEMP "sm_desktop_build.log"
+          $prev = $ErrorActionPreference
+          # 避免原生命令 stderr 在 pwsh 的 Stop 偏好下被当作终止错误
+          $ErrorActionPreference = 'Continue'
+          cmake --build --preset windows-msvc-release --target sm_desktop *>&1 |
+            Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = $prev
+          if ($code -ne 0) {
+            $lines = @(Get-Content $log)
+            $errs = @($lines | Where-Object {
+              $_ -match '(?i)error C[0-9]|error LNK|error MSB|fatal error|RCC: Error|moc: |错误'
+            } | Select-Object -First 12)
+            if ($errs.Count -eq 0) { $errs = @($lines | Select-Object -Last 12) }
+            $msg = ($errs -join ' || ')
+            if ($msg.Length -gt 4000) { $msg = $msg.Substring(0, 4000) }
+            Write-Host "::error::sm_desktop build failed (exit $code): $msg"
+            throw "cmake --build sm_desktop failed with exit code $code"
+          }
 
       - name: Deploy Qt runtime (windeployqt --qmldir)
         shell: pwsh
