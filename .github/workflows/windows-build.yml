@@ -328,7 +328,23 @@ jobs:
             Write-Host "::error::sm_desktop --smoke failed (exit $code; tried default/WARP/software/offscreen): $msg"
             throw "sm_desktop --smoke failed with exit code $code"
           }
-          Write-Host "::notice::sm_desktop --smoke passed (exit 0) with rendering backend: $used"
+          # 成功路径的 ::notice:: 同样要带「源码编码」取证：UiController 的两条 qInfo
+          # 与退出前的 qInfo 都是中文字面量，是 MSVC /utf-8 是否生效的直接证据——
+          # 未生效时编译期按 ANSI 代码页解析 UTF-8，中文会变成 "??????" 出现在这里。
+          # 取证整体包在 try 内：读日志失败绝不影响本步判定。
+          $probe = ""
+          try {
+            if (Test-Path $qtLog) {
+              $hit = @(Get-Content $qtLog |
+                Where-Object { $_ -match 'UiController|sm_desktop --smoke' } |
+                Select-Object -Unique | Select-Object -First 4)
+              if ($hit.Count -gt 0) { $probe = ($hit -join ' || ') }
+            }
+          } catch { }
+          if ($probe.Length -gt 900) { $probe = $probe.Substring(0, 900) }
+          $backend = "sm_desktop --smoke passed (exit 0); backend=$used"
+          if ($probe) { $backend = "$backend; encoding probe=$probe" }
+          Write-Host "::notice::$backend"
 
       - name: Upload desktop artifact (sm_desktop + deployed Qt runtime)
         uses: actions/upload-artifact@v4
