@@ -48,7 +48,7 @@ Windows：在 "x64 Native Tools Command Prompt for VS 2022" 中执行 `cmake --p
 
 当前实测：本机（macOS）`ctest` **22/22 全绿**，这是目前唯一可在本机复现的绿灯基线；`README.md`、`docs/BUILD_WINDOWS.md`、`docs/VERIFY_WINDOWS_MEDIA.md` 中的计数均已同步为 22/22。
 
-Windows CI（`.github/workflows/windows-build.yml`）含两个 job：`build`（vcpkg `sqlite3`+`ffmpeg` → MSVC debug → `ctest` 22/22 → headless 冒烟登录）与 `desktop`（aqt 预编译 Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release → `windeployqt --qmldir` 部署 platforms/qml → `sm_desktop --smoke` 退出码断言）。**两个 job 的绿灯状态请以 GitHub Actions 页面为准** —— 本机无 Qt/vcpkg 环境，无法本地复现 `desktop` job。
+Windows CI（`.github/workflows/windows-build.yml`）含两个 job：`build`（vcpkg `sqlite3`+`ffmpeg` → MSVC debug → `ctest` 22/22 → headless 冒烟登录）与 `desktop`（aqt 预编译 Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release → `windeployqt --qmldir` 部署 platforms/qml → `sm_desktop --smoke` 退出码断言）。**2026-09-10 实测：run #34434959091（commit `97760ad`）两个 job 全绿**；后续绿灯状态请以 GitHub Actions 页面为准 —— 本机无 Qt/vcpkg 环境，无法本地复现 `desktop` job。
 
 构建纪律（全仓强制）：MSVC 用 `/W4 /permissive-`，其他平台 `-Wall -Wextra`，新代码必须零告警；测试全绿才算完成。
 

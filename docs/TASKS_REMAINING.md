@@ -1,6 +1,6 @@
 # ShowMaster 剩余任务清单
 
-基线：2026-09-10（HEAD `97760ad`）。本机 macOS 侧 `ctest` 22/22 全绿；Windows CI（`.github/workflows/windows-build.yml`）的 `build`（vcpkg 依赖 → MSVC 编译 → ctest 22/22 → headless 冒烟）与 `desktop`（Qt 6.7 → `sm_desktop --smoke`）两个 job 的绿灯状态**请以 GitHub Actions 页面为准**（本机无 Qt/vcpkg，无法本地复现）。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
+基线：2026-09-10（本机 HEAD `b129c81`；上一提交 `97760ad`）。Windows CI（`.github/workflows/windows-build.yml`）`build` 与 `desktop` 两个 job 在 run #34434959091（commit `97760ad`，2026-09-10）**全绿**：`build` = vcpkg 依赖 → MSVC 编译 → ctest 22/22 → headless 冒烟；`desktop` = aqt Qt 6.7.2 → `SM_BUILD_DESKTOP=ON` Release 构建 `sm_desktop` → `windeployqt` → `--smoke` 退出码 0。本机（macOS）侧 `ctest` 22/22 全绿（stub 分支，无 Qt）——注意 `desktop` job 无法在本机复现，其后续绿灯状态请以 GitHub Actions 页面为准。规格书《ShowMaster工程开发规格书V2.0_可落地版.docx》为业务语义最高依据；本清单的状态来自源码逐项核对，标注三类：已核实完成 / 已核实缺口（附证据）/ 待验收核对。当本清单与源码不一致时，以源码为准，并立即修正本清单。
 
 ## 1. 总体结论
 
@@ -19,24 +19,24 @@
 
 规格书锁定 Qt 6.7 + QML 界面、D3D11 本地窗口输出 1080p60、Inno Setup 安装包；当前实际只有 headless 服务器 + 内嵌网页控制台（`src/web/web_ui.cpp`）。
 
-- 现状（2026-09-10 更新）：桌面端 P1-1 骨架**代码级完成**，待 Windows Qt 6.7 实机编译冒烟（DoD 未达成）。
+- 现状（2026-09-10 更新）：桌面端 P1-1 骨架**代码级完成**，且已由 Windows CI `desktop` job 完成**真编译 + 真冒烟**：run #34434959091（commit `97760ad`）该 job 全部步骤 success，含 aqt Qt 6.7.2 安装、`-DSM_BUILD_DESKTOP=ON` Release 构建、`windeployqt --qmldir` 部署（带 `platforms/`+`qml/` 存在性断言）、`sm_desktop --smoke` 退出码 0（即 QML 装配成功且事件循环真实跑过首轮上行信号）。剩余仅人工实机验收项：窗口视觉/布局锚点符合第 9 章语义、1080p60 输出视口（依赖 P1-2 窗口输出）。
   - `CMakeLists.txt` 新增 `SM_BUILD_DESKTOP`（默认 OFF）与 `sm_desktop` 目标：`Qt6 6.7` 组件 `Core Gui Qml Quick QuickControls2`，AUTOMOC/AUTORCC + `qt_finalize_executable`（WIN32 子系统）。
   - 入口 `src/app/main_qt.cpp`；桥接 `src/app/qt/kernel_host.{h,cpp}`（`kernelBridge` 上下文属性：下行 JSON 指令 `postCommand`/transport/playlist 透传，上行信号 busEvent/statusChanged/playlistChanged/frameReady/kernelReady/fatalError）；装配 `src/app/qt/ui_controller.{h,cpp}`。
   - QML `src/app/qt/qml/`：`Main.qml`（1600×900，六区锚点 + 事件分发）+ `panels/` 六面板 + `UiStyle.js`（`.pragma library` 引擎级样式单例）+ `qml.qrc`（前缀 `/qml`，AUTORCC 打包）。
   - 已验证到静态级：qrc↔磁盘↔CMake↔include↔契约交叉核对通过；`UiStyle` 257 处引用差集校验无悬空；`Main.qml` → 六面板 `callPanel` 分发对照 24/24 命中（自动化脚本扫描，无悬空分派）；Singleton 目录导入语义修正为 JS 库（详见 Git 工作区改动，本机无 Qt 故未编译）。实机构建步骤已写入 `docs/BUILD_WINDOWS.md` §7。
-  - CI 冒烟就位（2026-09-10）：入口新增 `--smoke` 自检（`src/app/main_qt.cpp`：QML 装配失败返回 1；成功进入事件循环 2.5s 让首轮上行信号真实执行后退出码 0）；`.github/workflows/windows-build.yml` 新增 `desktop` job（vcpkg Qt6 → `SM_BUILD_DESKTOP=ON` Release → `windeployqt --qmldir` → `sm_desktop --smoke` 退出码断言，详见 `docs/BUILD_WINDOWS.md` §6）。首次 run 待推送触发（本机无 Qt 环境，未本地执行）。
+  - CI 冒烟就位（2026-09-10）：入口新增 `--smoke` 自检（`src/app/main_qt.cpp`：QML 装配失败返回 1；成功进入事件循环 2.5s 让首轮上行信号真实执行后退出码 0）；`.github/workflows/windows-build.yml` 新增 `desktop` job（aqt 预编译 Qt 6.7.2（§7.1 方式 A）→ `SM_BUILD_DESKTOP=ON` Release → `windeployqt --qmldir` → `sm_desktop --smoke` 退出码断言，详见 `docs/BUILD_WINDOWS.md` §6）。首次 run 已于 2026-09-10 触发并**全绿**（run #34434959091，见上）；本机无 Qt 环境，故不做本地执行。
 - 落点：Windows 实机按 `docs/BUILD_WINDOWS.md` §7 执行 `-DSM_BUILD_DESKTOP=ON` 构建与冒烟（出口项 E2/E3）；CI `desktop` job（路径 A，§6）提供自动化断言与产物。规格书第 1、2、9 章。
 - 依赖：先于 P1-2（渲染窗口需要 D3D11 交换链）。
 - DoD：Windows 上启动应用出现可操作主窗口；布局锚点符合第 9 章语义；本地输出视口 1080p60。
 
 ### P1-2 D3D11 渲染与帧通道（规格书 M2 10.2.3 / 第 2.3 章 RHI）
 
-- 现状：离屏渲染与帧通道部分完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest 22/22 通过；Windows 真分支待 CI/真机编译验证）。
+- 现状：离屏渲染与帧通道部分完成（2026-09-10 复核：macOS 侧 stub 分支 configure + 编译 + ctest 22/22 通过；Windows 真分支（`_WIN32 && SM_HAS_D3D11`）已由 CI `build` job 编译并 ctest 22/22 通过 —— run #34434959091）。
   - 新增 RHI 抽象层 `src/platform/rhi/rhi.h`：`PixelFormat`/`BlendOp`/`BlendConfig`/`Texture2DDesc`、`ITexture`（upload/readback/native_handle）、`IPgmMixer`（`kMaxLayers=4` 层混合 + `compose`/`compose_and_readback`）、`IDevice`（`create_device()` 工厂）。
   - D3D11 后端 `src/platform/rhi/rhi_d3d11.cpp`：离屏设备（HW→WARP 回退，无交换链）；纹理 `UpdateSubresource` 上传；离屏渲染目标 + staging 纹理 `CopyResource`/`Map` 回读；混合由 blend state 实现（Replace/Over/Add/Multiply × opacity）；每层四边形按 `fit_center` 自适应。非 Windows/未启用 `SM_HAS_D3D11` 时提供返回 `nullptr` 的 stub。
   - `CMakeLists.txt`：glob 纳入 `src/platform/rhi/*.cpp`；`if(WIN32)` 下 `sm_engines` PUBLIC 链接 `d3d11 dxgi d3dcompiler`、PRIVATE 定义 `SM_HAS_D3D11=1`（同 `SM_HAS_FFMPEG` 模式）。
   - `media_backend.cpp`：`capture_pgm_frame_jpeg()` 改为经渲染路径——无渲染上下文时返回空串，有上下文时最新解码帧上传 layer0 → 4 层合成 → 回读 → JPEG-Base64（对齐 `media_backend.h` 头注释语义）。
-- 剩余缺口：单视口本地窗口输出（1080p60）依赖 P1-1 交换链；vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3 范畴）；Windows + `SM_HAS_D3D11` 真分支尚未在 CI/真机编译回归。
+- 剩余缺口：**单视口本地窗口输出（1080p60）未实现** —— 需在 RHI 增加「输出窗口 + DXGI 交换链」能力并接到 PGM 合成结果（P1-2 收尾项，当前正在推进）；vjfx 引擎仍为 CPU 回退（GPU 着色器属 Phase 3 范畴）。
 - 依赖：P1-1 窗口交换链（仅窗口输出部分）。
 - DoD（离屏部分已达成）：4 层混合可用；`capture_pgm_frame_jpeg` 从渲染帧读取，无渲染上下文时返回空串。待验收：Windows 真分支编译 + 离屏合成像素级冒烟。
 
